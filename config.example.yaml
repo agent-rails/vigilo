@@ -151,7 +151,7 @@ suppress_rules:
 # C2/exfil over :443 — which port rules treat as safe — is still caught.
 #
 # include_known_c2 ships OFF deliberately. The built-in set includes Telegram
-# ranges (the 2026-07 DPRK infostealer used the Telegram Bot-API for C2), and
+# ranges (the Contagious Interview infostealer uses the Telegram Bot-API for C2), and
 # vigilo's own Telegram alerter uses those same ranges — enabling it on a host
 # that alerts via Telegram makes vigilo alert on itself. Turn it on for hosts
 # where such egress is anomalous, e.g. prod validators.
@@ -160,5 +160,5 @@ suppress_rules:
 #   include_known_c2: true
 #   ip_ranges:
 #     - cidr: 203.0.113.0/24
-#       label: "known-bad range from incident 2026-07"
+#       label: "known-bad range from threat intel"
 #       severity: critical

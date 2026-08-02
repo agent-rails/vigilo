@@ -35,9 +35,9 @@ type IOCIPRange struct {
 // Telegram ranges, so forcing them would self-alert. Seed these via config on
 // hosts where such egress is anomalous.
 //
-// The Telegram ranges are included because the 2026-07 DPRK "Contagious
-// Interview" infostealer used Telegram (149.154.x) for C2/exfil over :443 —
-// which port-based rules miss.
+// The Telegram ranges ship because the DPRK "Contagious Interview" infostealer
+// family uses the Telegram Bot-API (149.154.x) for C2/exfil over :443, which
+// port-based rules treat as safe.
 var KnownC2IPRanges = []IOCIPRange{
 	{CIDR: "149.154.160.0/20", Label: "Telegram (Bot-API C2/exfil channel — DPRK Contagious Interview)", Severity: SeverityCritical},
 	{CIDR: "91.108.4.0/22", Label: "Telegram (Bot-API C2/exfil channel)", Severity: SeverityCritical},

@@ -117,8 +117,8 @@ supply_chain_guard:
 ## IOC matching (network)
 
 Port heuristics structurally miss C2/exfil over :443 (a "safe" port) — which is
-exactly what the 2026-07 DPRK infostealer used (Telegram Bot-API C2 at
-149.154.166.110:443). The IOC store closes that gap: the network collector
+exactly what the Contagious Interview infostealer family uses (Telegram Bot-API
+C2, e.g. 149.154.166.110:443). The IOC store closes that gap: the network collector
 matches every new outbound connection's remote IP against known-bad ranges
 **before** the port logic, so a known-bad IP is flagged regardless of port.
 
@@ -137,8 +137,8 @@ ioc:
 ```
 
 Built-in `KnownC2IPRanges` (opt-in via `include_known_c2`) currently covers the
-Telegram ranges from the 2026-07 incident. Extensible to file-path and
-process-name indicators via the same `IOCStore`.
+published Telegram Bot-API ranges used by the campaign. Extensible to file-path
+and process-name indicators via the same `IOCStore`.
 
 ## Current detections
 
@@ -162,8 +162,8 @@ aren't read as broader than they are:
 
 - **Detection is post-fetch for the lockfile paths.** `.terraform.lock.hcl` is
   written by `terraform init` — the same command that already executed the
-  provider. A finding there tells you that you were compromised, not that you
-  are about to be. The pre-execution signals are `.terraformrc`
+  provider. A finding there means the host has already run it, not that it is
+  about to. The pre-execution signals are `.terraformrc`
   (`dev_overrides`/mirrors) and the npm manifest checks.
 - **`node_modules` is scanned one level deep only.** Installed direct
   dependencies (`node_modules/<pkg>/package.json` and

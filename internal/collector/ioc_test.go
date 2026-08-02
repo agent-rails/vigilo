@@ -6,12 +6,13 @@ import (
 	"time"
 )
 
-func TestIOCStoreMatchesIncidentC2(t *testing.T) {
-	// The 2026-07 infostealer's C2 IP, over :443 — the case port heuristics miss.
+func TestIOCStoreMatchesKnownC2(t *testing.T) {
+	// A published Contagious Interview C2 address, reached over :443 — the case
+	// port heuristics structurally miss.
 	s := NewIOCStore(KnownC2IPRanges)
 	m, ok := s.MatchIP("149.154.166.110")
 	if !ok {
-		t.Fatal("known incident C2 IP not matched")
+		t.Fatal("known-bad C2 IP not matched")
 	}
 	if m.Severity != SeverityCritical {
 		t.Errorf("severity = %s, want critical", m.Severity)
@@ -68,8 +69,8 @@ func TestIOCStoreDefaultSeverity(t *testing.T) {
 	}
 }
 
-// The C2 session from the 2026-07 incident was a long-lived Telegram Bot-API
-// connection. On install-on-a-suspect-host — and on every Restart=always
+// Contagious Interview C2 is a long-lived Telegram Bot-API connection. When
+// vigilo is installed on an already-suspect host — and on every Restart=always
 // restart — that connection already exists when the daemon starts, so the
 // baseline scan must still report it. Baseline suppression is for the noisy
 // port heuristics only.
@@ -80,7 +81,7 @@ func TestBaselineScanStillReportsKnownBadIndicator(t *testing.T) {
 
 	c := connKey{
 		localIP: "10.0.0.2", localPort: 51234,
-		remoteIP: "149.154.166.110", remotePort: 443, // the incident's C2, on a "safe" port
+		remoteIP: "149.154.166.110", remotePort: 443, // published C2 address, on a "safe" port
 	}
 	if !nw.checkIOC(c) {
 		t.Fatal("known-bad indicator not matched")
