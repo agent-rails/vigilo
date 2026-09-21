@@ -136,10 +136,15 @@ npm install && npm run dev
 ### 5. Multi-server setup (Tailscale)
 
 ```bash
-# On each monitored server: set mcp_transport: http in config.yaml
+# On each monitored server: set mcp_transport: http and mcp_token in config.yaml
+#   (or export VIGILO_MCP_TOKEN=$(openssl rand -hex 32) for the daemon)
 # In agent/.env on your central host:
 VIGILO_DAEMON_URLS=validator-1=http://100.64.0.1:7070,signer=http://100.64.0.2:7070
+VIGILO_MCP_TOKEN=<the same token the daemons were given>
 ```
+
+Every daemon behind `VIGILO_DAEMON_URLS` must accept the same token; the agent
+sends one `Authorization: Bearer` header to all of them.
 
 ---
 
@@ -195,6 +200,7 @@ suppress_rules:
 | `VIGILO_ALERT_CHANNEL` | required | Slack channel ID |
 | `VIGILO_DAEMON_URLS` | — | Multi-server: `label=url,label=url,...` |
 | `VIGILO_MCP_URL` | — | Single remote daemon URL |
+| `VIGILO_MCP_TOKEN` | — | Bearer token for the daemon's MCP HTTP transport |
 | `VIGILO_DAEMON_BIN` | `vigilo` | Binary path (stdio mode) |
 | `SCAN_CRON` | `*/5 * * * *` | LLM scan schedule |
 | `LOOKBACK_MINUTES` | `6` | Event window per scan |
@@ -207,6 +213,14 @@ suppress_rules:
 ### Web dashboard authentication
 
 Set `VIGILO_WEB_TOKEN` (env var) or `web_token` in `config.yaml`. When set, every request to the dashboard requires `Authorization: Bearer <token>` or `?token=<token>`. Without a token configured there is no auth — do not expose the port publicly.
+
+### MCP HTTP authentication
+
+Set `VIGILO_MCP_TOKEN` (env var) or `mcp_token` in `config.yaml`. When set, every request to the MCP HTTP transport requires `Authorization: Bearer <token>`. There is deliberately no `?token=` form here, because a token in a URL reaches browser history, proxy logs and `Referer` headers; every MCP client can send a header.
+
+Requests carrying an `Origin` header are rejected with 403 regardless of the token. MCP clients are not browsers, and the SSE library sets `Access-Control-Allow-Origin: *`, so without this a web page you visit could read the event stream. This is not by itself DNS-rebinding protection — a rebound request is same-origin and sends no `Origin` — which is why the token matters even on loopback.
+
+Without a token configured there is no auth and the daemon logs a warning at startup. The MCP tools return watched file paths, process lineage and command lines, so an unauthenticated listener answers "where are the secrets on this host".
 
 ### Network binding — never expose ports publicly
 

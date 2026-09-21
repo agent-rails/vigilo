@@ -33,7 +33,7 @@ Vigilo raises the cost of attacks and shortens your detection window. It is one 
 
 **Never expose vigilo ports on the public internet.**
 
-- MCP server (`:7070`): always bind to `127.0.0.1` or a Tailscale/WireGuard interface.
+- MCP server (`127.0.0.1:7070`): always bind to loopback or a Tailscale/WireGuard interface, and set `mcp_token`.
 - Web dashboard (e.g. `:7080`): always bind to `127.0.0.1`. Enable `VIGILO_WEB_TOKEN` auth.
 - Use Tailscale for remote access instead of opening firewall ports.
 
@@ -87,6 +87,7 @@ chown vigilo:vigilo /var/lib/vigilo
 | `VIGILO_SLACK_WEBHOOK_URL` | `alerter.slack.webhook_url` |
 | `VIGILO_SMTP_PASSWORD` | `alerter.email.password` |
 | `VIGILO_WEB_TOKEN` | `web_token` (web dashboard auth) |
+| `VIGILO_MCP_TOKEN` | `mcp_token` (MCP HTTP transport auth) |
 
 Set these in `/etc/vigilo/env` (mode 0600, owned by `vigilo`) and reference in the service unit:
 
@@ -109,7 +110,7 @@ EnvironmentFile=/etc/vigilo/env
 ```
 
 - **SQLite file**: local only, mode 0600. Vigilo user reads/writes. No network exposure.
-- **MCP server**: stdio (no network) or HTTP (bind to loopback only). No auth in current release — rely on network isolation.
+- **MCP server**: stdio (no network) or HTTP. Over HTTP, a Bearer token is required (`VIGILO_MCP_TOKEN` / `mcp_token`), compared in constant time and accepted only in the `Authorization` header, never a query parameter. Requests carrying an `Origin` header are refused outright, because the SSE library sets `Access-Control-Allow-Origin: *` and browsers are never legitimate MCP clients. An empty token disables auth and logs a warning at startup. Bind to loopback.
 - **Web dashboard**: token auth via `VIGILO_WEB_TOKEN`. Rate-limited (60 req/min/IP). Bind to loopback only.
 - **Alert channels**: outbound only (Slack webhook, Telegram API, SMTP). Credentials stored in env vars.
 
@@ -118,9 +119,10 @@ EnvironmentFile=/etc/vigilo/env
 | Threat | Mitigation |
 |---|---|
 | Spoofing web dashboard | Bearer token auth (`VIGILO_WEB_TOKEN`), bind to loopback |
+| Spoofing MCP HTTP client | Bearer token auth (`VIGILO_MCP_TOKEN`), `Origin` rejection, bind to loopback |
 | Tampering with event store | SQLite WAL mode, file permissions (0600), ProtectSystem=strict |
 | Repudiation | Structured JSON logs via slog; all web requests access-logged |
-| Information disclosure | No auth on MCP stdio (process isolation); web auth required |
+| Information disclosure | MCP stdio relies on process isolation; MCP HTTP and the web dashboard both require a Bearer token |
 | Denial of service (web) | Rate limiting 60 req/min/IP; graceful shutdown on SIGTERM |
 | Elevation of privilege | `NoNewPrivileges=true`, dedicated vigilo user, no capabilities |
 
