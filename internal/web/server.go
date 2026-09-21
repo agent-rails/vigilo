@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"expvar"
@@ -164,16 +165,20 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		// Check Authorization: Bearer <token>
+		// Both comparisons are constant time in the token's contents. Length is
+		// still observable, since ConstantTimeCompare returns early when the two
+		// operands differ in size.
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
-			if strings.TrimPrefix(authHeader, "Bearer ") == s.cfg.Token {
+			if tokenMatches(strings.TrimPrefix(authHeader, "Bearer "), s.cfg.Token) {
 				next(w, r)
 				return
 			}
 		}
-		// Check ?token=<token>
-		if r.URL.Query().Get("token") == s.cfg.Token {
+		// ?token= is kept for the dashboard, which is opened in a browser and
+		// cannot set headers on a plain navigation. It is not offered on the MCP
+		// transport, where every client can send an Authorization header.
+		if tokenMatches(r.URL.Query().Get("token"), s.cfg.Token) {
 			next(w, r)
 			return
 		}
@@ -323,6 +328,10 @@ func (s *Server) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func tokenMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
