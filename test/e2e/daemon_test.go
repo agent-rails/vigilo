@@ -190,7 +190,11 @@ type event struct {
 // Returns nil on transient errors (429, connection refused) so callers can retry.
 func getEvents(t *testing.T, d *instance, extra string, token string) []event {
 	t.Helper()
-	since := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	// UTC so Format emits a "Z" suffix. A local offset like "+01:00" is
+	// concatenated raw into the query below, where the "+" decodes to a space
+	// and the server rejects the timestamp. That made the suite pass in CI (UTC)
+	// and fail on any developer machine with a non-zero offset.
+	since := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	url := "http://" + d.webAddr + "/api/events?since=" + since + extra
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -554,7 +558,7 @@ func TestWebAuthQueryParamTokenGrantsAccess(t *testing.T) {
 	const token = "test-secret-token-qp"
 	d := startDaemon(t, daemonOpts{watchPaths: []string{dir}, webToken: token})
 
-	since := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	since := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	url := "http://" + d.webAddr + "/api/events?since=" + since + "&token=" + token
 	resp, err := http.Get(url)
 	if err != nil {
