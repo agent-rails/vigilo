@@ -8,6 +8,10 @@ Wants=network.target
 Type=simple
 User=vigilo
 Group=vigilo
+# Secrets (VIGILO_MCP_TOKEN, VIGILO_WEB_TOKEN, alert credentials) live here,
+# mode 0600 owned by vigilo, so they never appear in config files or the unit.
+# The leading "-" keeps the service startable before the file exists.
+EnvironmentFile=-/etc/vigilo/env
 ExecStart=/usr/local/bin/vigilo \
     -config /etc/vigilo/config.yaml \
     -db /var/lib/vigilo/events.db
