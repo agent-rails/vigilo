@@ -240,8 +240,15 @@ func main() {
 			// interface, which is the exposure this default exists to prevent.
 			addr = config.Defaults.MCPAddr
 		}
+		if cfg.MCPToken == "" && !cfg.MCPAllowUnauthenticated {
+			slog.Error("refusing to start: mcp_transport is http with no mcp_token. "+
+				"The MCP tools return watched paths, command lines and process lineage. "+
+				"Set mcp_token / VIGILO_MCP_TOKEN, or mcp_allow_unauthenticated: true to accept the risk",
+				"addr", addr)
+			os.Exit(1)
+		}
 		if cfg.MCPToken == "" {
-			slog.Warn("MCP HTTP transport is unauthenticated; set mcp_token or VIGILO_MCP_TOKEN",
+			slog.Warn("MCP HTTP transport is serving unauthenticated by explicit configuration",
 				"addr", addr)
 		}
 		slog.Info("MCP server listening", "addr", addr)

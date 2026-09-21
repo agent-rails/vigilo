@@ -21,6 +21,10 @@ buffer_retention_hours: 24
 # HTTP transport so harness/mcp_client.py can reach it over the eval network,
 # not stdio (which would require a subprocess pipe, not a fit for a
 # container the harness doesn't own the process tree of).
+# Disposable eval container on an internal docker network, so it opts out of the
+# MCP token rather than carrying a secret. A real deployment must set mcp_token;
+# the daemon refuses to start on http without one.
+mcp_allow_unauthenticated: true
 mcp_transport: http
 mcp_addr: ":7070"
 

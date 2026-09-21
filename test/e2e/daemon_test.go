@@ -150,6 +150,10 @@ alerter:
 	}
 	if opts.mcpToken != "" {
 		fmt.Fprintf(&sb, "mcp_token: %q\n", opts.mcpToken)
+	} else {
+		// The harness runs every daemon on mcp_transport: http, and the daemon
+		// refuses to start unauthenticated without this opt-out.
+		sb.WriteString("mcp_allow_unauthenticated: true\n")
 	}
 	return sb.String()
 }
