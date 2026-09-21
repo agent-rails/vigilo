@@ -24,7 +24,7 @@ export type SentinelEvent = VigiloEvent;
 
 export type MCPTransport =
   | { type: 'stdio'; command: string; args?: string[] }
-  | { type: 'http'; url: string };
+  | { type: 'http'; url: string; token?: string };
 
 type ToolContent = { type: string; text?: string };
 
@@ -40,7 +40,12 @@ export class VigiloMCPClient {
   async connect(transport: MCPTransport): Promise<void> {
     const t = transport.type === 'stdio'
       ? new StdioClientTransport({ command: transport.command, args: transport.args ?? [] })
-      : new SSEClientTransport(new URL(transport.url + '/sse'));
+      : new SSEClientTransport(
+          new URL(transport.url + '/sse'),
+          transport.token
+            ? { requestInit: { headers: { Authorization: `Bearer ${transport.token}` } } }
+            : undefined,
+        );
     await this.client.connect(t);
   }
 
@@ -96,17 +101,18 @@ export class SentinelMCPClient extends VigiloMCPClient {
  * Falls back to VIGILO_MCP_URL (single server) or stdio.
  */
 export function parseTransports(): Array<{ label: string; transport: MCPTransport }> {
+  const token = process.env.VIGILO_MCP_TOKEN;
   const urls = process.env.VIGILO_DAEMON_URLS;
   if (urls) {
     return urls.split(',').map(entry => {
       const [label, url] = entry.trim().split('=');
       if (!url) throw new Error(`VIGILO_DAEMON_URLS entry malformed: "${entry}" — expected label=url`);
-      return { label: label.trim(), transport: { type: 'http', url: url.trim() } as MCPTransport };
+      return { label: label.trim(), transport: { type: 'http', url: url.trim(), token } as MCPTransport };
     });
   }
 
   if (process.env.VIGILO_MCP_URL) {
-    return [{ label: 'remote', transport: { type: 'http', url: process.env.VIGILO_MCP_URL } }];
+    return [{ label: 'remote', transport: { type: 'http', url: process.env.VIGILO_MCP_URL, token } }];
   }
 
   return [{

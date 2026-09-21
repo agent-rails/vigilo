@@ -17,7 +17,7 @@ async function main() {
 
   logger.info({ mcpURL, lookback }, 'connecting to vigilo daemon');
 
-  const transport: MCPTransport = { type: 'http', url: mcpURL };
+  const transport: MCPTransport = { type: 'http', url: mcpURL, token: process.env.VIGILO_MCP_TOKEN };
   const client = new VigiloMCPClient('local');
   await client.connect(transport);
   logger.info('connected');
