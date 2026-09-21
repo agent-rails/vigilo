@@ -1,6 +1,7 @@
 package mcp_test
 
 import (
+	"bufio"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 func startSSE(t *testing.T, token string) string {
 	t.Helper()
 	srv := vigilomcp.New(openTestStore(t))
-	ts := httptest.NewServer(srv.SSEHandler("127.0.0.1:0", vigilomcp.AuthConfig{Token: token}))
+	ts := httptest.NewServer(srv.SSEHandler(vigilomcp.AuthConfig{Token: token}))
 	t.Cleanup(ts.Close)
 	return ts.URL
 }
@@ -99,4 +100,37 @@ func TestEmptyTokenDisablesAuthButOriginStillRejected(t *testing.T) {
 	if code := post(t, base, map[string]string{"Origin": "https://evil.example"}); code != http.StatusForbidden {
 		t.Fatalf("the origin check must apply even with auth disabled, got %d", code)
 	}
+}
+
+// The endpoint event must be relative so the client resolves it against the host
+// it actually dialled. Nothing previously opened /sse at all, which is why a
+// green suite and two review passes missed this.
+func TestAdvertisedMessageEndpointIsRelative(t *testing.T) {
+	base := startSSE(t, "s3cret")
+	req, err := http.NewRequest(http.MethodGet, base+"/sse", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	for i := 0; i < 10; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read endpoint event: %v", err)
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		if strings.Contains(line, "http://") || strings.Contains(line, "https://") {
+			t.Fatalf("advertised endpoint must be relative, got %q", strings.TrimSpace(line))
+		}
+		return
+	}
+	t.Fatal("no data: line in the SSE stream")
 }

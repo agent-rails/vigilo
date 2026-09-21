@@ -69,7 +69,7 @@ type AuthConfig struct {
 func (s *Server) ServeSSE(addr string, auth AuthConfig) error {
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           s.SSEHandler(addr, auth),
+		Handler:           s.SSEHandler(auth),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -80,8 +80,15 @@ func (s *Server) ServeSSE(addr string, auth AuthConfig) error {
 // construction separate from binding lets tests exercise the real handler chain
 // through httptest without reserving a port, and gives the listener a single
 // place where authentication is applied.
-func (s *Server) SSEHandler(addr string, auth AuthConfig) http.Handler {
-	return auth.wrap(server.NewSSEServer(s.mcpSrv, server.WithBaseURL("http://"+addr)))
+// No WithBaseURL: the endpoint event then advertises a relative
+// "/message?sessionId=...", which the client resolves against the host it
+// actually dialled. Deriving an absolute base from the listen address conflates
+// two questions -- which socket to accept on, and what address a client should
+// use to reach us -- and pins clients to that exact string, so a client dialling
+// localhost, a tailnet name or a mapped container port fails the SDK's
+// endpoint-origin equality check after connecting.
+func (s *Server) SSEHandler(auth AuthConfig) http.Handler {
+	return auth.wrap(server.NewSSEServer(s.mcpSrv))
 }
 
 func (a AuthConfig) wrap(next http.Handler) http.Handler {
