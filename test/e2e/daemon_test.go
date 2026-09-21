@@ -53,9 +53,9 @@ type daemonOpts struct {
 	excludePaths []string
 	suppress     []suppressRule
 	webToken     string
-	webhookURL   string        // if set, configures immediate alerter webhook
-	minSeverity  string        // alerter min_severity (default: critical when empty)
-	cooldown     string        // signal_cooldown duration string (default: 1s)
+	webhookURL   string // if set, configures immediate alerter webhook
+	minSeverity  string // alerter min_severity (default: critical when empty)
+	cooldown     string // signal_cooldown duration string (default: 1s)
 }
 
 type suppressRule struct {
