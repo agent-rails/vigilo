@@ -38,6 +38,11 @@ type Config struct {
 	// process lineage of everything vigilo watches).
 	MCPToken string `yaml:"mcp_token"`
 
+	// MCPAllowUnauthenticated permits mcp_transport: http with no token. The
+	// daemon otherwise refuses to start, because the MCP tools return watched
+	// paths and process lineage and an omitted secret is not consent.
+	MCPAllowUnauthenticated bool `yaml:"mcp_allow_unauthenticated"`
+
 	// Alert webhook (optional — agent can also pull via MCP)
 	AlertWebhookURL string `yaml:"alert_webhook_url"`
 

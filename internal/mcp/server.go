@@ -53,9 +53,9 @@ func (s *Server) ServeStdio(ctx context.Context) error {
 }
 
 // AuthConfig gates the HTTP transport. An empty Token disables authentication,
-// matching the web dashboard's behaviour; the daemon logs a warning in that case
-// rather than failing, so an existing HTTP deployment keeps working across an
-// upgrade instead of silently losing its event feed.
+// which the daemon refuses to start with unless the operator sets
+// mcp_allow_unauthenticated explicitly: consent to serve the event buffer
+// unauthenticated should be stated, never inferred from an omitted secret.
 type AuthConfig struct {
 	Token string
 }

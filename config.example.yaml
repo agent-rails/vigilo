@@ -28,10 +28,16 @@ mcp_transport: stdio
 # Bind to loopback. ":7070" listens on every interface.
 # mcp_addr: "127.0.0.1:7070"
 
-# Bearer token required on the MCP HTTP transport.
+# Bearer token required on the MCP HTTP transport. With mcp_transport: http the
+# daemon refuses to start unless this is set, because the MCP tools return
+# watched paths, command lines and process lineage.
 # Prefer the VIGILO_MCP_TOKEN env var so it never sits in a config file or image.
 # Generate with: openssl rand -hex 32
 # mcp_token: ""
+
+# Serve the MCP HTTP transport with no token. Off by default; an omitted secret
+# is not consent, so accepting this risk has to be stated.
+# mcp_allow_unauthenticated: false
 
 # Web dashboard — event timeline and stats (optional)
 # Bind to localhost; use nginx/caddy in front for TLS

@@ -32,6 +32,7 @@ func TestConfigEnvVarOverridesWebToken(t *testing.T) {
 poll_interval: 1s
 buffer_retention_hours: 1
 mcp_transport: http
+mcp_allow_unauthenticated: true
 mcp_addr: %s
 web_addr: %s
 signal_cooldown: 1s
@@ -98,6 +99,7 @@ func TestConfigMissingFileUsesDefaults(t *testing.T) {
 	realCfg := fmt.Sprintf(`poll_interval: 1s
 buffer_retention_hours: 1
 mcp_transport: http
+mcp_allow_unauthenticated: true
 mcp_addr: 127.0.0.1:%d
 web_addr: %s
 signal_cooldown: 1s
@@ -120,6 +122,7 @@ alerter:
 	minCfg := fmt.Sprintf(`poll_interval: 1s
 buffer_retention_hours: 1
 mcp_transport: http
+mcp_allow_unauthenticated: true
 mcp_addr: 127.0.0.1:%d
 web_addr: %s
 signal_cooldown: 1s
