@@ -10,8 +10,8 @@ import (
 // TestSeverityForPath verifies the severity scoring table.
 func TestSeverityForPath(t *testing.T) {
 	cases := []struct {
-		path     string
-		wantMin  Severity // severity must be >= this
+		path    string
+		wantMin Severity // severity must be >= this
 	}{
 		{"/app/keystore/UTC--key.json", SeverityCritical},
 		{"/home/user/wallet.json", SeverityCritical},

@@ -18,21 +18,21 @@ import (
 var knownSafePorts = map[int]bool{
 	80: true, 443: true, 53: true, 22: true,
 	8545: true, 8546: true, // Ethereum RPC
-	9650: true,             // Avalanche
-	26657: true,            // Cosmos
+	9650:  true, // Avalanche
+	26657: true, // Cosmos
 }
 
 // suspiciousPorts: always flag these.
 var suspiciousPorts = map[int]bool{
 	4444: true, 4445: true, 1337: true, 31337: true, // common reverse shell ports
-	6666: true, 6667: true, 6668: true,               // IRC C2
-	9001: true, 9030: true,                            // Tor
+	6666: true, 6667: true, 6668: true, // IRC C2
+	9001: true, 9030: true, // Tor
 }
 
 type connKey struct {
-	localIP   string
-	localPort int
-	remoteIP  string
+	localIP    string
+	localPort  int
+	remoteIP   string
 	remotePort int
 }
 

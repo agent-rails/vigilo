@@ -27,7 +27,7 @@ type emailChannel struct {
 }
 
 func newEmailChannel(cfg *EmailConfig) *emailChannel { return &emailChannel{cfg: cfg} }
-func (e *emailChannel) name() string                  { return "email" }
+func (e *emailChannel) name() string                 { return "email" }
 
 func (ec *emailChannel) send(ev collector.Event, body string) error {
 	sev := strings.ToUpper(string(ev.Severity))

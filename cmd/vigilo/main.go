@@ -27,8 +27,8 @@ var (
 )
 
 func main() {
-	configPath  := flag.String("config", "/etc/vigilo/config.yaml", "Path to config file")
-	dbPath      := flag.String("db", "/var/lib/vigilo/events.db", "SQLite database path")
+	configPath := flag.String("config", "/etc/vigilo/config.yaml", "Path to config file")
+	dbPath := flag.String("db", "/var/lib/vigilo/events.db", "SQLite database path")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 

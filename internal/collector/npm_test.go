@@ -63,8 +63,8 @@ func TestNpmConformance(t *testing.T) {
 				want: []expectedFinding{{"npm_untrusted_registry", SeverityHigh}},
 			},
 			{
-				name: "npmrc registry override",
-				file: ".npmrc",
+				name:    "npmrc registry override",
+				file:    ".npmrc",
 				content: "registry=https://evil-registry.io/\n",
 				want:    []expectedFinding{{"npm_registry_override", SeverityHigh}},
 			},

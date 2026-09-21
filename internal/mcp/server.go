@@ -225,12 +225,12 @@ func (s *Server) handleCriticalEvents(_ context.Context, req mcp.CallToolRequest
 
 // ecsEvent is a minimal Elastic Common Schema representation of a vigilo event.
 type ecsEvent struct {
-	Timestamp string         `json:"@timestamp"`
-	Event     ecsEventFields `json:"event"`
-	File      *ecsFile       `json:"file,omitempty"`
-	Process   *ecsProcess    `json:"process,omitempty"`
-	Network   *ecsNetwork    `json:"network,omitempty"`
-	User      *ecsUser       `json:"user,omitempty"`
+	Timestamp string            `json:"@timestamp"`
+	Event     ecsEventFields    `json:"event"`
+	File      *ecsFile          `json:"file,omitempty"`
+	Process   *ecsProcess       `json:"process,omitempty"`
+	Network   *ecsNetwork       `json:"network,omitempty"`
+	User      *ecsUser          `json:"user,omitempty"`
 	Labels    map[string]string `json:"labels"`
 }
 type ecsEventFields struct {
@@ -239,15 +239,21 @@ type ecsEventFields struct {
 	Action   string   `json:"action"`
 	Severity string   `json:"severity"`
 }
-type ecsFile    struct{ Path string `json:"path"` }
+type ecsFile struct {
+	Path string `json:"path"`
+}
 type ecsProcess struct {
 	Name string `json:"name,omitempty"`
 	PID  int    `json:"pid,omitempty"`
 	PPID int    `json:"parent,omitempty"`
 	Args string `json:"command_line,omitempty"`
 }
-type ecsNetwork struct{ DestinationIP string `json:"destination_ip"` }
-type ecsUser    struct{ ID string `json:"id,omitempty"` }
+type ecsNetwork struct {
+	DestinationIP string `json:"destination_ip"`
+}
+type ecsUser struct {
+	ID string `json:"id,omitempty"`
+}
 
 func (s *Server) handleECSEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	since, errMsg := parseSinceResult(req.Params.Arguments)

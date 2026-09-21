@@ -289,12 +289,12 @@ func TestCommentStripPreservesSlashesInHashes(t *testing.T) {
 
 func TestStripComment(t *testing.T) {
 	cases := map[string]string{
-		`  version = "1.0"  # trailing`:  `version = "1.0"`,
-		`  version = "1.0" // trailing`:  `version = "1.0"`,
-		`# whole line`:                   ``,
-		`"zh:aa//bb",`:                   `"zh:aa//bb",`,
-		`"has # hash",`:                  `"has # hash",`,
-		`provider "x" { # }`:             `provider "x" {`,
+		`  version = "1.0"  # trailing`: `version = "1.0"`,
+		`  version = "1.0" // trailing`: `version = "1.0"`,
+		`# whole line`:                  ``,
+		`"zh:aa//bb",`:                  `"zh:aa//bb",`,
+		`"has # hash",`:                 `"has # hash",`,
+		`provider "x" { # }`:            `provider "x" {`,
 	}
 	for in, want := range cases {
 		if got := stripComment(in); got != want {
