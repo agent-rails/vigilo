@@ -66,26 +66,36 @@ type AuthConfig struct {
 // overwrites any configured *http.Server with one whose Handler is the bare SSE
 // server, so wrapping via server.WithHTTPServer would be discarded and the event
 // buffer would serve unauthenticated.
-func (s *Server) ServeSSE(addr string, auth AuthConfig) error {
+func (s *Server) ServeSSE(ctx context.Context, addr string, auth AuthConfig) error {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.SSEHandler(auth),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	return srv.ListenAndServe()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	select {
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	case err := <-errCh:
+		return err
+	}
 }
 
 // SSEHandler returns the authenticated handler ServeSSE listens with. Keeping
 // construction separate from binding lets tests exercise the real handler chain
 // through httptest without reserving a port, and gives the listener a single
 // place where authentication is applied.
+//
 // No WithBaseURL: the endpoint event then advertises a relative
 // "/message?sessionId=...", which the client resolves against the host it
 // actually dialled. Deriving an absolute base from the listen address conflates
-// two questions -- which socket to accept on, and what address a client should
-// use to reach us -- and pins clients to that exact string, so a client dialling
-// localhost, a tailnet name or a mapped container port fails the SDK's
+// two different questions -- which socket to accept on, and what address a client
+// should use to reach us -- and pins clients to that exact string, so a client
+// dialling localhost, a tailnet name or a mapped container port fails the SDK's
 // endpoint-origin equality check after connecting.
 func (s *Server) SSEHandler(auth AuthConfig) http.Handler {
 	return auth.wrap(server.NewSSEServer(s.mcpSrv))
@@ -106,10 +116,14 @@ func (a AuthConfig) wrap(next http.Handler) http.Handler {
 			http.Error(w, "browser origins are not permitted", http.StatusForbidden)
 			return
 		}
-		if a.Token != "" && !bearerMatches(r.Header.Get("Authorization"), a.Token) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+		if a.Token != "" {
+			// More than one Authorization header is ambiguous; Header.Get would
+			// silently take the first and ignore the rest.
+			if headers := r.Header.Values("Authorization"); len(headers) != 1 || !bearerMatches(headers[0], a.Token) {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -120,10 +134,13 @@ func (a AuthConfig) wrap(next http.Handler) http.Handler {
 // token in a URL reaches browser history, proxy logs and Referer headers.
 func bearerMatches(header, token string) bool {
 	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
+	// RFC 7235 makes the auth scheme case-insensitive, so "bearer" is a valid
+	// credential and must not be rejected. Only the scheme is folded; the token
+	// itself stays byte-exact.
+	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(token)) == 1
+	return subtle.ConstantTimeCompare([]byte(header[len(prefix):]), []byte(token)) == 1
 }
 
 func (s *Server) addTool(tool mcp.Tool, h server.ToolHandlerFunc) {
