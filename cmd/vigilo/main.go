@@ -236,11 +236,17 @@ func main() {
 	case "http":
 		addr := cfg.MCPAddr
 		if addr == "" {
-			addr = ":7070"
+			// http.Server treats a blank Addr as ":http", i.e. port 80 on every
+			// interface, which is the exposure this default exists to prevent.
+			addr = config.Defaults.MCPAddr
+		}
+		if cfg.MCPToken == "" {
+			slog.Warn("MCP HTTP transport is unauthenticated; set mcp_token or VIGILO_MCP_TOKEN",
+				"addr", addr)
 		}
 		slog.Info("MCP server listening", "addr", addr)
 		go func() {
-			if err := mcpServer.ServeSSE(addr); err != nil {
+			if err := mcpServer.ServeSSE(addr, vigilomcp.AuthConfig{Token: cfg.MCPToken}); err != nil {
 				slog.Error("MCP HTTP server error", "err", err)
 				cancel()
 			}

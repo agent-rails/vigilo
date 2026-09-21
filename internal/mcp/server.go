@@ -6,8 +6,11 @@ package mcp
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -49,10 +52,71 @@ func (s *Server) ServeStdio(ctx context.Context) error {
 	return server.ServeStdio(s.mcpSrv)
 }
 
+// AuthConfig gates the HTTP transport. An empty Token disables authentication,
+// matching the web dashboard's behaviour; the daemon logs a warning in that case
+// rather than failing, so an existing HTTP deployment keeps working across an
+// upgrade instead of silently losing its event feed.
+type AuthConfig struct {
+	Token string
+}
+
 // ServeSSE runs the MCP server over SSE (HTTP transport for remote agents).
-func (s *Server) ServeSSE(addr string) error {
-	sse := server.NewSSEServer(s.mcpSrv, server.WithBaseURL("http://"+addr))
-	return sse.Start(addr)
+//
+// The listener is constructed here instead of calling SSEServer.Start: Start
+// overwrites any configured *http.Server with one whose Handler is the bare SSE
+// server, so wrapping via server.WithHTTPServer would be discarded and the event
+// buffer would serve unauthenticated.
+func (s *Server) ServeSSE(addr string, auth AuthConfig) error {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.SSEHandler(addr, auth),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	return srv.ListenAndServe()
+}
+
+// SSEHandler returns the authenticated handler ServeSSE listens with. Keeping
+// construction separate from binding lets tests exercise the real handler chain
+// through httptest without reserving a port, and gives the listener a single
+// place where authentication is applied.
+func (s *Server) SSEHandler(addr string, auth AuthConfig) http.Handler {
+	return auth.wrap(server.NewSSEServer(s.mcpSrv, server.WithBaseURL("http://"+addr)))
+}
+
+func (a AuthConfig) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An Origin header means the caller is a browser making a cross-origin
+		// request. The pinned SSE handler sets Access-Control-Allow-Origin: *
+		// unconditionally, so any such response is readable by the calling page and
+		// loopback binding does not prevent that. MCP clients are not browsers and
+		// never send Origin, so refusing these costs nothing.
+		//
+		// This does not by itself stop DNS rebinding: a rebound request is
+		// same-origin, and a same-origin GET carries no Origin header at all. The
+		// token is what stops that.
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "browser origins are not permitted", http.StatusForbidden)
+			return
+		}
+		if a.Token != "" && !bearerMatches(r.Header.Get("Authorization"), a.Token) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// bearerMatches compares in constant time. The token is only ever read from the
+// Authorization header; there is deliberately no ?token= query path, because a
+// token in a URL reaches browser history, proxy logs and Referer headers.
+func bearerMatches(header, token string) bool {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(token)) == 1
 }
 
 func (s *Server) addTool(tool mcp.Tool, h server.ToolHandlerFunc) {

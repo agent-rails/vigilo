@@ -30,7 +30,13 @@ type Config struct {
 
 	// MCP server transport: "stdio" or "http"
 	MCPTransport string `yaml:"mcp_transport"`
-	MCPAddr      string `yaml:"mcp_addr"` // only for http mode, e.g. ":7070"
+	MCPAddr      string `yaml:"mcp_addr"` // only for http mode, e.g. "127.0.0.1:7070"
+
+	// MCPToken is the Bearer token required for MCP HTTP transport access.
+	// Set via VIGILO_MCP_TOKEN env var or mcp_token config field.
+	// Empty = no auth (not recommended; the MCP tools expose the paths and
+	// process lineage of everything vigilo watches).
+	MCPToken string `yaml:"mcp_token"`
 
 	// Alert webhook (optional — agent can also pull via MCP)
 	AlertWebhookURL string `yaml:"alert_webhook_url"`
@@ -180,6 +186,7 @@ var Defaults = Config{
 	PollInterval:         5 * time.Second,
 	BufferRetentionHours: 24,
 	MCPTransport:         "stdio",
+	MCPAddr:              "127.0.0.1:7070",
 	SignalCooldown:       time.Hour,
 }
 
@@ -243,5 +250,8 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIGILO_WEB_TOKEN"); v != "" {
 		cfg.WebToken = v
+	}
+	if v := os.Getenv("VIGILO_MCP_TOKEN"); v != "" {
+		cfg.MCPToken = v
 	}
 }

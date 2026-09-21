@@ -46,6 +46,7 @@ func TestMain(m *testing.M) {
 
 type instance struct {
 	webAddr string
+	mcpAddr string
 }
 
 type daemonOpts struct {
@@ -53,6 +54,7 @@ type daemonOpts struct {
 	excludePaths []string
 	suppress     []suppressRule
 	webToken     string
+	mcpToken     string
 	webhookURL   string // if set, configures immediate alerter webhook
 	minSeverity  string // alerter min_severity (default: critical when empty)
 	cooldown     string // signal_cooldown duration string (default: 1s)
@@ -97,7 +99,7 @@ func startDaemon(t *testing.T, opts daemonOpts) *instance {
 	})
 
 	waitReady(t, webAddr)
-	return &instance{webAddr: webAddr}
+	return &instance{webAddr: webAddr, mcpAddr: mcpAddr}
 }
 
 func buildConfig(opts daemonOpts, mcpAddr, webAddr string) string {
@@ -145,6 +147,9 @@ alerter:
 	}
 	if opts.webToken != "" {
 		fmt.Fprintf(&sb, "web_token: %q\n", opts.webToken)
+	}
+	if opts.mcpToken != "" {
+		fmt.Fprintf(&sb, "mcp_token: %q\n", opts.mcpToken)
 	}
 	return sb.String()
 }
