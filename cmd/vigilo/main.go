@@ -252,13 +252,17 @@ func main() {
 				"addr", addr)
 		}
 		slog.Info("MCP server listening", "addr", addr)
+		mcpDone := make(chan struct{})
 		go func() {
-			if err := mcpServer.ServeSSE(addr, vigilomcp.AuthConfig{Token: cfg.MCPToken}); err != nil {
+			defer close(mcpDone)
+			if err := mcpServer.ServeSSE(ctx, addr, vigilomcp.AuthConfig{Token: cfg.MCPToken}); err != nil {
 				slog.Error("MCP HTTP server error", "err", err)
 				cancel()
 			}
 		}()
 		<-ctx.Done()
+		// Wait for the listener to drain before the store closes underneath it.
+		<-mcpDone
 	default: // "stdio"
 		if err := mcpServer.ServeStdio(ctx); err != nil {
 			slog.Error("MCP stdio server error", "err", err)

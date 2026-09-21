@@ -58,7 +58,7 @@ func TestWrongTokenIsRejected(t *testing.T) {
 
 func TestMalformedAuthorizationHeaderIsRejected(t *testing.T) {
 	base := startSSE(t, "s3cret")
-	for _, header := range []string{"s3cret", "Basic s3cret", "bearer s3cret", ""} {
+	for _, header := range []string{"s3cret", "Basic s3cret", "Bearer", "Bearer wrong", ""} {
 		if code := post(t, base, map[string]string{"Authorization": header}); code != http.StatusUnauthorized {
 			t.Errorf("Authorization %q should be 401, got %d", header, code)
 		}
@@ -83,28 +83,52 @@ func TestBrowserOriginIsRejectedEvenWithValidToken(t *testing.T) {
 
 func TestValidTokenReachesTheServer(t *testing.T) {
 	base := startSSE(t, "s3cret")
-	code := post(t, base, map[string]string{"Authorization": "Bearer s3cret"})
-	if code == http.StatusUnauthorized || code == http.StatusForbidden {
-		t.Fatalf("a valid token must reach the MCP server, got %d", code)
+	// 400 "Missing sessionId" is mcp-go's own handleMessage answering, which is
+	// what proves the request got past the middleware and into the MCP server.
+	// Asserting merely "not 401 and not 403" would also pass against a bare
+	// NotFoundHandler, i.e. if the MCP server were never mounted at all.
+	if code := post(t, base, map[string]string{"Authorization": "Bearer s3cret"}); code != http.StatusBadRequest {
+		t.Fatalf("a valid token must reach the MCP server (want 400), got %d", code)
 	}
 }
 
-// An empty token disables authentication, matching the web dashboard. The daemon
-// warns at startup in that case; this asserts the documented behaviour rather
-// than endorsing it as a deployment choice.
-func TestEmptyTokenDisablesAuthButOriginStillRejected(t *testing.T) {
-	base := startSSE(t, "")
-	if code := post(t, base, nil); code == http.StatusUnauthorized {
-		t.Fatal("an empty token should disable authentication")
+// RFC 7235 auth schemes are case-insensitive, so a client sending "bearer" is
+// presenting a valid credential and must not be refused.
+func TestSchemeIsCaseInsensitive(t *testing.T) {
+	base := startSSE(t, "s3cret")
+	for _, header := range []string{"Bearer s3cret", "bearer s3cret", "BEARER s3cret"} {
+		if code := post(t, base, map[string]string{"Authorization": header}); code == http.StatusUnauthorized {
+			t.Errorf("Authorization %q is a valid credential, got 401", header)
+		}
 	}
-	if code := post(t, base, map[string]string{"Origin": "https://evil.example"}); code != http.StatusForbidden {
-		t.Fatalf("the origin check must apply even with auth disabled, got %d", code)
+}
+
+// Two Authorization headers are ambiguous. Header.Get would silently honour the
+// first and ignore the rest, so a proxy-injected second header could ride along.
+func TestDuplicateAuthorizationHeadersAreRejected(t *testing.T) {
+	base := startSSE(t, "s3cret")
+	req, err := http.NewRequest(http.MethodPost, base+"/message", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Add("Authorization", "Bearer s3cret")
+	req.Header.Add("Authorization", "Bearer s3cret")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("duplicate Authorization headers should be 401, got %d", resp.StatusCode)
 	}
 }
 
 // The endpoint event must be relative so the client resolves it against the host
-// it actually dialled. Nothing previously opened /sse at all, which is why a
-// green suite and two review passes missed this.
+// it actually dialled. An absolute base derived from the listen address fails the
+// SDK's origin equality check for every client reaching the daemon under a
+// different hostname alias, which is the whole remote topology the README
+// documents. This is the coverage whose absence let that regression through a
+// green suite and two review passes.
 func TestAdvertisedMessageEndpointIsRelative(t *testing.T) {
 	base := startSSE(t, "s3cret")
 	req, err := http.NewRequest(http.MethodGet, base+"/sse", nil)
@@ -133,4 +157,18 @@ func TestAdvertisedMessageEndpointIsRelative(t *testing.T) {
 		return
 	}
 	t.Fatal("no data: line in the SSE stream")
+}
+
+// An empty token disables authentication at the middleware. Reaching this state
+// requires the operator to set mcp_allow_unauthenticated explicitly, because the
+// daemon otherwise refuses to start; this asserts the opt-out behaves as
+// documented rather than endorsing it as a deployment choice.
+func TestEmptyTokenDisablesAuthButOriginStillRejected(t *testing.T) {
+	base := startSSE(t, "")
+	if code := post(t, base, nil); code == http.StatusUnauthorized {
+		t.Fatal("an empty token should disable authentication")
+	}
+	if code := post(t, base, map[string]string{"Origin": "https://evil.example"}); code != http.StatusForbidden {
+		t.Fatalf("the origin check must apply even with auth disabled, got %d", code)
+	}
 }

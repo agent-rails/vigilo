@@ -41,7 +41,9 @@ export class VigiloMCPClient {
     const t = transport.type === 'stdio'
       ? new StdioClientTransport({ command: transport.command, args: transport.args ?? [] })
       : new SSEClientTransport(
-          new URL(transport.url + '/sse'),
+          // Exact-path routing on the daemon: a trailing slash in the configured
+          // URL would yield "//sse" and 404.
+          new URL('sse', transport.url.endsWith('/') ? transport.url : transport.url + '/'),
           transport.token
             ? { requestInit: { headers: { Authorization: `Bearer ${transport.token}` } } }
             : undefined,

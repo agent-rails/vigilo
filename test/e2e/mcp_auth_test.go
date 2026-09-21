@@ -41,9 +41,10 @@ func TestMCPHTTPRequiresToken(t *testing.T) {
 	if code := postMCP(t, d.mcpAddr, map[string]string{"Authorization": "Bearer wrong"}); code != http.StatusUnauthorized {
 		t.Errorf("wrong token = %d, want 401", code)
 	}
-	code := postMCP(t, d.mcpAddr, map[string]string{"Authorization": "Bearer e2e-s3cret"})
-	if code == http.StatusUnauthorized || code == http.StatusForbidden {
-		t.Errorf("correct token = %d, want the request to reach the server", code)
+	// 400 is mcp-go answering "Missing sessionId", which proves the request
+	// reached the MCP server rather than merely escaping the middleware.
+	if code := postMCP(t, d.mcpAddr, map[string]string{"Authorization": "Bearer e2e-s3cret"}); code != http.StatusBadRequest {
+		t.Errorf("correct token = %d, want 400 from the MCP server", code)
 	}
 }
 
@@ -59,7 +60,8 @@ func TestMCPHTTPRejectsBrowserOrigin(t *testing.T) {
 }
 
 // The daemon must refuse to serve the event buffer unauthenticated rather than
-// inferring consent from an omitted secret.
+// inferring consent from an omitted secret. Without this the whole token
+// mechanism is optional in exactly the deployments that need it most.
 func TestDaemonRefusesToStartUnauthenticated(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -73,6 +75,7 @@ mcp_addr: "127.0.0.1:%d"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+
 	out, err := exec.Command(daemonBin, "-config", cfgPath, "-db", filepath.Join(dir, "events.db")).CombinedOutput() //nolint:gosec
 	if err == nil {
 		t.Fatal("daemon started on http transport with no token; it must refuse")
@@ -82,7 +85,8 @@ mcp_addr: "127.0.0.1:%d"
 	}
 }
 
-// The explicit opt-out must still work, otherwise upgrading is a hard break.
+// The explicit opt-out must still work, otherwise upgrading is a hard break with
+// no escape hatch.
 func TestExplicitOptOutStartsUnauthenticated(t *testing.T) {
 	d := startDaemon(t, daemonOpts{watchPaths: []string{t.TempDir()}})
 	if code := postMCP(t, d.mcpAddr, nil); code == http.StatusUnauthorized {
