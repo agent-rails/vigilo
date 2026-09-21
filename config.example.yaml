@@ -25,7 +25,13 @@ buffer_retention_hours: 24
 mcp_transport: stdio
 
 # Only used when mcp_transport = "http"
-# mcp_addr: ":7070"
+# Bind to loopback. ":7070" listens on every interface.
+# mcp_addr: "127.0.0.1:7070"
+
+# Bearer token required on the MCP HTTP transport.
+# Prefer the VIGILO_MCP_TOKEN env var so it never sits in a config file or image.
+# Generate with: openssl rand -hex 32
+# mcp_token: ""
 
 # Web dashboard — event timeline and stats (optional)
 # Bind to localhost; use nginx/caddy in front for TLS
