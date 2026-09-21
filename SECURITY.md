@@ -110,7 +110,7 @@ EnvironmentFile=/etc/vigilo/env
 ```
 
 - **SQLite file**: local only, mode 0600. Vigilo user reads/writes. No network exposure.
-- **MCP server**: stdio (no network) or HTTP. Over HTTP, a Bearer token is required (`VIGILO_MCP_TOKEN` / `mcp_token`), compared in constant time and accepted only in the `Authorization` header, never a query parameter. Requests carrying an `Origin` header are refused outright, because the SSE library sets `Access-Control-Allow-Origin: *` and browsers are never legitimate MCP clients. An empty token disables auth and logs a warning at startup. Bind to loopback.
+- **MCP server**: stdio (no network) or HTTP. Over HTTP, a Bearer token is required (`VIGILO_MCP_TOKEN` / `mcp_token`), compared in constant time and accepted only in the `Authorization` header, never a query parameter. Requests carrying an `Origin` header are refused outright, because the SSE library sets `Access-Control-Allow-Origin: *` and browsers are never legitimate MCP clients. The daemon refuses to start on `mcp_transport: http` without a token unless `mcp_allow_unauthenticated: true` is set, which logs a warning at startup. Bind to loopback.
 - **Web dashboard**: token auth via `VIGILO_WEB_TOKEN`. Rate-limited (60 req/min/IP). Bind to loopback only.
 - **Alert channels**: outbound only (Slack webhook, Telegram API, SMTP). Credentials stored in env vars.
 

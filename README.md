@@ -60,7 +60,7 @@ vigilo (Go daemon)              vigilo-agent (TypeScript)
 │   ├── telegram.go (Bot API)
 │   ├── email.go   (SMTP)
 │   └── webhook.go (generic)
-└── mcp/server.go   (5 tools)
+└── mcp/server.go   (6 tools)
 ```
 
 ---
@@ -136,8 +136,13 @@ npm install && npm run dev
 ### 5. Multi-server setup (Tailscale)
 
 ```bash
-# On each monitored server: set mcp_transport: http and mcp_token in config.yaml
-#   (or export VIGILO_MCP_TOKEN=$(openssl rand -hex 32) for the daemon)
+# On each monitored server, in config.yaml:
+#   mcp_transport: http
+#   mcp_addr: "100.64.0.1:7070"   # the address the agent dials, not 127.0.0.1
+#   mcp_token: ...                # or export VIGILO_MCP_TOKEN for the daemon
+#
+# mcp_addr must be the interface the agent reaches. The default is loopback, so
+# leaving it unset makes this topology unreachable.
 # In agent/.env on your central host:
 VIGILO_DAEMON_URLS=validator-1=http://100.64.0.1:7070,signer=http://100.64.0.2:7070
 VIGILO_MCP_TOKEN=<the same token the daemons were given>
@@ -150,7 +155,7 @@ sends one `Authorization: Bearer` header to all of them.
 
 ## MCP tools
 
-The daemon exposes five tools to any MCP-compatible client:
+The daemon exposes six tools to any MCP-compatible client:
 
 | Tool | Description |
 |---|---|
@@ -216,11 +221,11 @@ Set `VIGILO_WEB_TOKEN` (env var) or `web_token` in `config.yaml`. When set, ever
 
 ### MCP HTTP authentication
 
-Set `VIGILO_MCP_TOKEN` (env var) or `mcp_token` in `config.yaml`. When set, every request to the MCP HTTP transport requires `Authorization: Bearer <token>`. There is deliberately no `?token=` form here, because a token in a URL reaches browser history, proxy logs and `Referer` headers; every MCP client can send a header.
+Set `VIGILO_MCP_TOKEN` (env var) or `mcp_token` in `config.yaml`. With `mcp_transport: http` the daemon refuses to start unless one is set, or `mcp_allow_unauthenticated: true` states the risk explicitly. Every request then requires `Authorization: Bearer <token>`, with the scheme matched case-insensitively per RFC 7235. There is deliberately no `?token=` form here, because a token in a URL reaches browser history, proxy logs and `Referer` headers; every MCP client can send a header.
 
 Requests carrying an `Origin` header are rejected with 403 regardless of the token. MCP clients are not browsers, and the SSE library sets `Access-Control-Allow-Origin: *`, so without this a web page you visit could read the event stream. This is not by itself DNS-rebinding protection — a rebound request is same-origin and sends no `Origin` — which is why the token matters even on loopback.
 
-Without a token configured there is no auth and the daemon logs a warning at startup. The MCP tools return watched file paths, process lineage and command lines, so an unauthenticated listener answers "where are the secrets on this host".
+Under `mcp_allow_unauthenticated: true` there is no auth and the daemon logs a warning at startup. The MCP tools return watched file paths, process lineage and command lines, so an unauthenticated listener answers "where are the secrets on this host".
 
 ### Network binding — never expose ports publicly
 
