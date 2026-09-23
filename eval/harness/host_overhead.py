@@ -7,9 +7,12 @@ omitted, same as V1/V3's own disclosed scope limits."""
 from __future__ import annotations
 
 import re
+import sqlite3
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 DAEMON_CONTAINER = "docker-daemon-1"
 
@@ -65,23 +68,67 @@ def _median(values: list[float]) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
-def get_db_size_bytes(container: str, db_path: str = "/var/lib/vigilo/events.db") -> int:
-    """CORRECTED (live measurement): SQLite in WAL mode (confirmed live --
-    events.db-wal and events.db-shm both present) keeps the main .db file
-    at a near-fixed size and writes real data into the WAL file until a
-    checkpoint. Measuring only the main file reported zero growth across
-    15 real events. Sums all three files for the real on-disk footprint."""
-    total = 0
-    for suffix in ("", "-wal", "-shm"):
+def _copy_store(container: str, db_path: str, dest: Path) -> None:
+    """Copies the event store and its WAL out of the container, failing loudly.
+
+    `-shm` is deliberately not copied: SQLite rebuilds it from the WAL, and a
+    stale one buys nothing. The WAL is not optional -- if it fails to copy
+    while the main file succeeds, the checkpoint becomes a no-op and the
+    measurement silently returns the un-checkpointed main-file size, which is
+    the original zero-growth bug wearing a different hat.
+    """
+    for suffix in ("", "-wal"):
         result = subprocess.run(
-            ["docker", "exec", container, "stat", "-c", "%s", db_path + suffix],
+            ["docker", "cp", f"{container}:{db_path + suffix}", str(dest) + suffix],
             capture_output=True,
-            text=True,
-            timeout=10,
+            timeout=30,
         )
-        if result.returncode == 0:
-            total += int(result.stdout.strip())
-    return total
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docker cp {db_path + suffix} from {container} failed: "
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
+
+
+def snapshot_store(container: str, db_path: str = "/var/lib/vigilo/events.db") -> tuple[int, int]:
+    """Steady-state on-disk bytes and row count, from a single checkpointed copy.
+
+    Both values come from one snapshot on purpose. Taking them separately meant
+    two copy-and-checkpoint round trips up to half a second apart, and the
+    collectors are poll-based, so an event landing in that gap inflated the
+    denominator and deflated bytes-per-event.
+
+    Counting rows directly is the honest denominator: trusting the number of
+    triggers the harness fired misses events the daemon generated on its own
+    and events a suppression rule dropped.
+
+    Reads the file after `PRAGMA wal_checkpoint(TRUNCATE)`, because SQLite in
+    WAL mode holds the main file near-fixed and writes into the WAL until a
+    checkpoint. Measuring the main file alone reported zero growth across 15
+    real events; summing `.db` + `.db-wal` + `.db-shm` then overcorrected,
+    because the WAL is write-ahead churn whose size tracks write traffic and
+    checkpoint timing rather than retained data. Measured live at 40 events,
+    that sum reported 22,758 B/event against a checkpointed 819 B/event.
+
+    Checkpointing both snapshots also makes the delta immune to a live
+    auto-checkpoint firing between them, which would have corrupted any
+    sum-the-files approach.
+
+    The live daemon is never written to and never paused. Copying a database
+    under concurrent writes can capture a torn WAL tail; the checkpoint then
+    recovers the last consistent commit, so the result can undercount by at
+    most the events written during the copy itself.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        local = Path(tmp) / "events.db"
+        _copy_store(container, db_path, local)
+        connection = sqlite3.connect(local)
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            count = int(connection.execute("SELECT count(*) FROM events").fetchone()[0])
+        finally:
+            connection.close()
+        return local.stat().st_size, count
 
 
 def compute_overhead_report(
