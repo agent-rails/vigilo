@@ -5,8 +5,11 @@ n=10 down to n=1 per chain (the negative-latency guard correctly rejected
 the resulting nonsense pairings, silently masking the real bug upstream of
 it). Live-reproduced against a real 10-repeat env_write run."""
 
+import pytest
+
+from harness.latency import LatencyMetric
 from harness.trigger import TriggerResult
-from scripts.run_evaluation import _alert_matches_trigger
+from scripts.run_evaluation import N_LATENCY_REPEATS, _alert_matches_trigger, _validate_latency_sample_count
 
 
 def _alert(t1: float, resource: str, source: str = "file_access") -> dict:
@@ -51,3 +54,15 @@ def test_one_to_one_pairing_consumes_alerts():
     assert len({id(a) for _, a in paired}) == 10  # each alert used exactly once
     for trigger, alert in paired:
         assert alert["t1"] > trigger.t0  # each trigger paired with ITS OWN later alert, not an earlier one
+
+
+def test_incomplete_sample_gate_rejects_well_formed_partial_results():
+    """A partial set of matches must not be presented as a complete median."""
+    expected = N_LATENCY_REPEATS
+    metrics = [LatencyMetric(chain, float(i), float(i + 1), 1000.0, "fsnotify")
+        for chain in ("keystore_write", "env_write", "suspicious_outbound")
+        for i in range(expected)]
+    _validate_latency_sample_count(metrics, expected)
+
+    with pytest.raises(RuntimeError, match="refusing to report medians"):
+        _validate_latency_sample_count(metrics[:-1], expected)

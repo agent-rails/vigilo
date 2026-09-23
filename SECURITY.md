@@ -6,7 +6,7 @@
 
 Vigilo is an **observation and alerting** daemon. It watches OS-level signals and alerts on suspicious activity:
 
-- Creates and writes on watched paths, classified by filename; these events alone do not establish whether a change was authorized
+- Creates, writes, removes, and renames on watched paths, classified by filename; these events alone do not establish whether a change was authorized
 - Shells spawned from application processes (RCE indicator)
 - Outbound connections to unexpected destinations (exfiltration indicator)
 - Supply-chain attacks via package install from running processes
@@ -23,7 +23,7 @@ Vigilo is not a prevention system. It does **not**:
 - Protect against a compromised kernel (rootkit)
 - Guarantee detection if an attacker kills the vigilo process before alerting
 
-The default fsnotify collector does not observe file reads and does not attribute a filesystem event to a process. Optional Linux audit-log ingestion requires auditd rules and log permissions; its coverage depends on that configuration. Process and network polling can miss short-lived activity. Suppression, cooldowns, queue capacity, permissions, and channel failures can also limit what reaches an operator. Detection latency and LLM interpretation are not guaranteed.
+The default fsnotify collector does not observe file reads and does not attribute a filesystem event to a process. A rename is not correlated with a matching create, so Vigilo cannot distinguish an in-tree rename or atomic save from a move out of the watched tree based on that event alone. Recursive walks of new directories run synchronously; a large tree can delay event handling, and inotify queue overflow can drop events that Vigilo does not reconstruct. Optional Linux audit-log ingestion requires auditd rules and log permissions; its coverage depends on that configuration. Process and network polling can miss short-lived activity. Suppression, cooldowns, queue capacity, permissions, and channel failures can also limit what reaches an operator. Detection latency and LLM interpretation are not guaranteed.
 
 ---
 

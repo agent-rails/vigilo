@@ -26,6 +26,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "integration: requires a live Docker daemon/container, slower, skip-clean if unavailable",
 ]

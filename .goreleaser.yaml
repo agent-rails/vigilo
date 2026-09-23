@@ -69,7 +69,7 @@ release:
 
     OS-level observation and alerting for crypto infrastructure: filesystem
     create/write events, sampled process and network activity, and optional
-    supply-chain checks. See CHANGELOG.md for v0.2.0 changes and upgrade notes.
+    supply-chain checks. See CHANGELOG.md for v0.2.1 changes and current limits.
 
     ### Quick start
 

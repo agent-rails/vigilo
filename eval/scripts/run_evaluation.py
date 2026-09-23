@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -69,6 +70,8 @@ def run_v1_latency() -> dict:
         if metric is not None:
             metrics.append(metric)
 
+    _validate_latency_sample_count(metrics, N_LATENCY_REPEATS)
+
     report = aggregate_latencies(metrics, poll_interval_ms=POLL_INTERVAL_MS)
     print(f"V1 result: state={report.state}")
     for chain, stats in report.per_chain.items():
@@ -81,6 +84,20 @@ def _alert_matches_trigger(alert: dict, trigger) -> bool:
     if trigger.chain_name == "suspicious_outbound":
         return alert["payload"].get("source") == "network" and resource.endswith(trigger.resource)
     return resource == trigger.resource
+
+
+def _validate_latency_sample_count(metrics, expected_repeats: int) -> None:
+    expected = {
+        "keystore_write": expected_repeats,
+        "env_write": expected_repeats,
+        "suspicious_outbound": expected_repeats,
+    }
+    observed = Counter(metric.chain_name for metric in metrics)
+    incomplete = {chain: (observed[chain], n) for chain, n in expected.items() if observed[chain] != n}
+    if incomplete:
+        raise RuntimeError(
+            f"latency run incomplete (observed, expected) samples by chain: {incomplete}; refusing to report medians"
+        )
 
 
 def run_v3_false_positive() -> dict:

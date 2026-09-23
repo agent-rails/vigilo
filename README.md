@@ -2,7 +2,7 @@
 
 > *Latin: "I watch. I am vigilant."*
 
-OS-level observation and alerting for crypto infrastructure. Vigilo collects filesystem create/write events, polls process and network activity, and can scan npm and Terraform configuration for suspicious changes. Rule-based alerts run in the daemon; an optional LLM analyst queries its event history through MCP.
+OS-level observation and alerting for crypto infrastructure. Vigilo collects filesystem create/write/remove/rename events, polls process and network activity, and can scan npm and Terraform configuration for suspicious changes. Rule-based alerts run in the daemon; an optional LLM analyst queries its event history through MCP.
 
 Vigilo does not block attacks or guarantee detection. The default file watcher does **not** detect file reads or identify the process responsible for a change. Linux audit-log ingestion is a separate, opt-in collector that requires configured audit rules and permission to read the log. See [SECURITY.md](SECURITY.md) for coverage limits.
 
@@ -35,8 +35,8 @@ Collection and immediate alerting continue if the MCP transport closes. `/health
 
 | Signal | Tier | Severity |
 |---|---|---|
-| Private key / keystore file created or written | Immediate + LLM | Critical |
-| `.env` or secret file written | Immediate + LLM | High |
+| Private key / keystore file created, written, removed, or renamed | Immediate + LLM | Critical |
+| `.env` or secret file created, written, removed, or renamed | Immediate + LLM | High |
 | Shell spawned from node/python (RCE) | LLM | High |
 | Outbound connection to suspicious port | Immediate + LLM | High |
 | Env dump → outbound connection (exfiltration chain) | LLM | Critical |
