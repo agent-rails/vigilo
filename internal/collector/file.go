@@ -132,12 +132,20 @@ func (fw *FileWatcher) loop() {
 			if !ok {
 				return
 			}
-			// fsnotify reports create/write changes here, not file reads.
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+			// fsnotify reports create/write/remove/rename here, not file reads.
+			// Rename fires on the source path, so a key moved out of a watched
+			// directory surfaces as an event on the path it left.
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) ||
+				event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 				sev := severityForPath(event.Name)
 				action := "write"
-				if event.Has(fsnotify.Create) {
+				switch {
+				case event.Has(fsnotify.Create):
 					action = "create"
+				case event.Has(fsnotify.Remove):
+					action = "remove"
+				case event.Has(fsnotify.Rename):
+					action = "rename"
 				}
 				e := Event{
 					Source:    SourceFile,

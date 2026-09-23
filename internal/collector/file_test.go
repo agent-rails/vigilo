@@ -160,3 +160,100 @@ func TestFileWatcherWatchesASingleFilePath(t *testing.T) {
 		t.Fatal("timeout: no event received for a watch_paths entry pointing directly at a file")
 	}
 }
+
+// TestFileWatcherDetectsMoveOut confirms a key moved out of a watched directory
+// surfaces as an event. fsnotify delivers Rename on the source path; the loop
+// previously acted only on Write and Create, so a move produced nothing at all.
+func TestFileWatcherDetectsMoveOut(t *testing.T) {
+	dir := t.TempDir()
+	dest := t.TempDir()
+
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{dir}, nil, events)
+	if err != nil {
+		t.Fatalf("NewFileWatcher: %v", err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer watcher.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	targetFile := filepath.Join(dir, "wallet.json")
+	if err := os.WriteFile(targetFile, []byte(`{"key":"secret"}`), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	drainEvents(t, events)
+
+	if err := os.Rename(targetFile, filepath.Join(dest, "wallet.json")); err != nil {
+		t.Fatalf("rename file: %v", err)
+	}
+
+	select {
+	case e := <-events:
+		if e.Action != "rename" {
+			t.Errorf("action = %q, want %q", e.Action, "rename")
+		}
+		if e.Resource != targetFile {
+			t.Errorf("resource = %q, want %q", e.Resource, targetFile)
+		}
+		if e.Severity != SeverityCritical {
+			t.Errorf("severity = %q, want critical for wallet.json", e.Severity)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout: no event received after moving wallet.json out of the watched directory")
+	}
+}
+
+// TestFileWatcherDetectsRemove confirms deleting a watched key emits an event.
+func TestFileWatcherDetectsRemove(t *testing.T) {
+	dir := t.TempDir()
+
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{dir}, nil, events)
+	if err != nil {
+		t.Fatalf("NewFileWatcher: %v", err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer watcher.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	targetFile := filepath.Join(dir, "wallet.json")
+	if err := os.WriteFile(targetFile, []byte(`{"key":"secret"}`), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	drainEvents(t, events)
+
+	if err := os.Remove(targetFile); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+
+	select {
+	case e := <-events:
+		if e.Action != "remove" {
+			t.Errorf("action = %q, want %q", e.Action, "remove")
+		}
+		if e.Resource != targetFile {
+			t.Errorf("resource = %q, want %q", e.Resource, targetFile)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout: no event received after removing wallet.json")
+	}
+}
+
+// drainEvents consumes the create/write events produced by test setup so the
+// assertion that follows sees only the operation under test.
+func drainEvents(t *testing.T, events <-chan Event) {
+	t.Helper()
+	for {
+		select {
+		case <-events:
+		case <-time.After(300 * time.Millisecond):
+			return
+		}
+	}
+}
