@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -47,9 +48,21 @@ func (s *Server) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	return h(ctx, req)
 }
 
-// ServeStdio runs the MCP server over stdin/stdout (default transport).
+// ServeStdio runs the MCP server over stdin/stdout (default transport). It
+// returns nil when stdin reaches EOF and ctx.Err() when ctx is cancelled; in
+// neither case is the daemon's lifetime implied — see cmd/vigilo/main.go.
+//
+// Listen is called directly rather than server.ServeStdio, which discards the
+// caller's context in favour of a context.Background() it owns and installs its
+// own SIGTERM/SIGINT handler. Both belong to main: with the library's handler in
+// play a shutdown signal surfaced here as a plain "context canceled" error,
+// indistinguishable from a transport fault.
 func (s *Server) ServeStdio(ctx context.Context) error {
-	return server.ServeStdio(s.mcpSrv)
+	// The library's notification goroutine must also stop when stdin closes,
+	// while the parent context stays alive for collection and alerting.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return server.NewStdioServer(s.mcpSrv).Listen(ctx, os.Stdin, os.Stdout)
 }
 
 // AuthConfig gates the HTTP transport. An empty Token disables authentication,
