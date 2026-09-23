@@ -138,10 +138,19 @@ func (d *Dispatcher) ShouldAlert(e collector.Event) bool {
 	return severityRank[e.Severity] >= severityRank[minSev]
 }
 
+// failureBackoff caps how long a delivery that reached nobody may suppress the
+// same signal. It is deliberately short relative to any sane cooldown: an alert
+// that was never delivered is not evidence that a human has been told, so it
+// must not buy the silence a delivered one does. It is not zero either --
+// dropping the entry outright would let a burst of identical events each open
+// their own round of sends against an endpoint that is already failing.
+const failureBackoff = 30 * time.Second
+
 // Fire sends an immediate alert to all configured channels, with dedup suppression.
 // On failure, a single retry is attempted after 500ms.
 func (d *Dispatcher) Fire(e collector.Event) {
 	fp := eventFingerprint(e)
+	reserved := time.Now().Add(d.cfg.Cooldown)
 	d.dedupMu.Lock()
 	if expiry, seen := d.dedupCache[fp]; seen && time.Now().Before(expiry) {
 		d.dedupMu.Unlock()
@@ -149,7 +158,11 @@ func (d *Dispatcher) Fire(e collector.Event) {
 			"resource", e.Resource, "action", e.Action, "source", e.Source)
 		return
 	}
-	d.dedupCache[fp] = time.Now().Add(d.cfg.Cooldown)
+	// Reserved before the first send, not recorded after the last one: main
+	// dispatches Fire in a goroutine per event, so a burst of identical events
+	// would otherwise all pass this check and all send. Total failure walks the
+	// reservation back down to failureBackoff below.
+	d.dedupCache[fp] = reserved
 	d.dedupMu.Unlock()
 
 	msg := formatAlert(e)
@@ -178,14 +191,47 @@ func (d *Dispatcher) Fire(e collector.Event) {
 		return
 	}
 	if allFailed {
+		d.releaseDedup(fp, reserved)
 		atomic.AddUint64(&d.alertsDropped, 1)
 		slog.Error("alert dropped — all channels failed",
 			"event_id", e.ID,
 			"source", e.Source,
 			"severity", e.Severity,
+			"retry_after", failureBackoff,
 		)
 	} else {
 		atomic.AddUint64(&d.alertsSent, 1)
+	}
+}
+
+// releaseDedup shortens a reservation whose alert reached no channel, so the
+// next occurrence of that signal is retried within failureBackoff instead of
+// the full cooldown. It never lengthens the window a successful send would
+// have taken, and it leaves any reservation it does not own alone -- a later
+// Fire that already took the fingerprint keeps its own expiry.
+//
+// This re-opens the fingerprint; it does not re-send the failed alert. Nothing
+// is queued and nothing retries on a timer: the next send happens only when
+// the host produces another event with the same fingerprint, so the send rate
+// stays bounded by the event rate and, per fingerprint, by failureBackoff.
+func (d *Dispatcher) releaseDedup(fp string, reserved time.Time) {
+	backoff := d.cfg.Cooldown
+	if backoff > failureBackoff {
+		backoff = failureBackoff
+	}
+
+	d.dedupMu.Lock()
+	defer d.dedupMu.Unlock()
+
+	if cur, ok := d.dedupCache[fp]; !ok || !cur.Equal(reserved) {
+		return
+	}
+	if backoff <= 0 {
+		delete(d.dedupCache, fp)
+		return
+	}
+	if expiry := time.Now().Add(backoff); expiry.Before(reserved) {
+		d.dedupCache[fp] = expiry
 	}
 }
 
