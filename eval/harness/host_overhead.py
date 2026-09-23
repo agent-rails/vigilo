@@ -68,68 +68,67 @@ def _median(values: list[float]) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
-def get_db_size_bytes(container: str, db_path: str = "/var/lib/vigilo/events.db") -> int:
-    """Steady-state on-disk bytes for the event store, measured after a WAL
-    checkpoint.
+def _copy_store(container: str, db_path: str, dest: Path) -> None:
+    """Copies the event store and its WAL out of the container, failing loudly.
 
-    Two earlier approaches were both wrong, in opposite directions. Measuring
-    only the main `.db` file reported zero growth across 15 real events,
-    because SQLite in WAL mode holds the main file near-fixed and writes into
-    the WAL until a checkpoint. Summing `.db` + `.db-wal` + `.db-shm` then
-    overcorrected: the WAL is write-ahead churn whose size tracks write
-    traffic and checkpoint timing, not retained data. Measured live at 40
-    events, the sum reported 22,758 B/event while the checkpointed store held
-    819 B/event -- a 28x overstatement.
+    `-shm` is deliberately not copied: SQLite rebuilds it from the WAL, and a
+    stale one buys nothing. The WAL is not optional -- if it fails to copy
+    while the main file succeeds, the checkpoint becomes a no-op and the
+    measurement silently returns the un-checkpointed main-file size, which is
+    the original zero-growth bug wearing a different hat.
+    """
+    for suffix in ("", "-wal"):
+        result = subprocess.run(
+            ["docker", "cp", f"{container}:{db_path + suffix}", str(dest) + suffix],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docker cp {db_path + suffix} from {container} failed: "
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
 
-    The daemon image ships no `sqlite3` binary, so the three files are copied
-    out and checkpointed with `PRAGMA wal_checkpoint(TRUNCATE)` against the
-    copy. The live daemon is never written to and never paused. Copying a
-    database that is being written concurrently can capture a torn WAL tail;
-    the checkpoint then recovers the last consistent commit, so the result can
-    undercount by at most the events written during the copy itself.
+
+def snapshot_store(container: str, db_path: str = "/var/lib/vigilo/events.db") -> tuple[int, int]:
+    """Steady-state on-disk bytes and row count, from a single checkpointed copy.
+
+    Both values come from one snapshot on purpose. Taking them separately meant
+    two copy-and-checkpoint round trips up to half a second apart, and the
+    collectors are poll-based, so an event landing in that gap inflated the
+    denominator and deflated bytes-per-event.
+
+    Counting rows directly is the honest denominator: trusting the number of
+    triggers the harness fired misses events the daemon generated on its own
+    and events a suppression rule dropped.
+
+    Reads the file after `PRAGMA wal_checkpoint(TRUNCATE)`, because SQLite in
+    WAL mode holds the main file near-fixed and writes into the WAL until a
+    checkpoint. Measuring the main file alone reported zero growth across 15
+    real events; summing `.db` + `.db-wal` + `.db-shm` then overcorrected,
+    because the WAL is write-ahead churn whose size tracks write traffic and
+    checkpoint timing rather than retained data. Measured live at 40 events,
+    that sum reported 22,758 B/event against a checkpointed 819 B/event.
+
+    Checkpointing both snapshots also makes the delta immune to a live
+    auto-checkpoint firing between them, which would have corrupted any
+    sum-the-files approach.
+
+    The live daemon is never written to and never paused. Copying a database
+    under concurrent writes can capture a torn WAL tail; the checkpoint then
+    recovers the last consistent commit, so the result can undercount by at
+    most the events written during the copy itself.
     """
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "events.db"
-        for suffix in ("", "-wal", "-shm"):
-            subprocess.run(
-                ["docker", "cp", f"{container}:{db_path + suffix}", str(local) + suffix],
-                capture_output=True,
-                timeout=30,
-            )
-        if not local.exists():
-            raise RuntimeError(f"could not copy {db_path} out of {container}")
+        _copy_store(container, db_path, local)
         connection = sqlite3.connect(local)
         try:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            count = int(connection.execute("SELECT count(*) FROM events").fetchone()[0])
         finally:
             connection.close()
-        return local.stat().st_size
-
-
-def get_event_count(container: str, db_path: str = "/var/lib/vigilo/events.db") -> int:
-    """Rows in the events table, read from a checkpointed copy.
-
-    Counting rows directly is the honest denominator for bytes-per-event. The
-    alternative -- trusting the number of triggers the harness fired -- misses
-    events the daemon generated on its own and events a suppression rule
-    dropped.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        local = Path(tmp) / "events.db"
-        for suffix in ("", "-wal", "-shm"):
-            subprocess.run(
-                ["docker", "cp", f"{container}:{db_path + suffix}", str(local) + suffix],
-                capture_output=True,
-                timeout=30,
-            )
-        if not local.exists():
-            raise RuntimeError(f"could not copy {db_path} out of {container}")
-        connection = sqlite3.connect(local)
-        try:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            return int(connection.execute("SELECT count(*) FROM events").fetchone()[0])
-        finally:
-            connection.close()
+        return local.stat().st_size, count
 
 
 def compute_overhead_report(
