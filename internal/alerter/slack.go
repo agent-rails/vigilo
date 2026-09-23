@@ -27,33 +27,7 @@ func newSlackChannel(cfg *SlackConfig, client *http.Client) *slackChannel {
 func (s *slackChannel) name() string { return "slack" }
 
 func (s *slackChannel) send(e collector.Event, _ string) error {
-	emoji := severityEmoji(e.Severity)
-	payload := map[string]any{
-		"text": fmt.Sprintf("%s *[%s]* `%s` -> `%s`  (%s)",
-			emoji, strings.ToUpper(string(e.Severity)),
-			e.Action, e.Resource, e.Source),
-		"blocks": []map[string]any{
-			{
-				"type": "section",
-				"text": map[string]any{
-					"type": "mrkdwn",
-					"text": fmt.Sprintf(
-						"%s *Vigilo Immediate Alert -- %s*\n*Action:* `%s`\n*Resource:* `%s`\n*Source:* %s%s",
-						emoji,
-						strings.ToUpper(string(e.Severity)),
-						e.Action, e.Resource, e.Source,
-						func() string {
-							if e.Process != "" {
-								return fmt.Sprintf("\n*Process:* `%s` (pid %d)", e.Process, e.PID)
-							}
-							return ""
-						}(),
-					),
-				},
-			},
-		},
-	}
-
+	payload := slackPayload(e)
 	b, _ := json.Marshal(payload)
 	resp, err := s.client.Post(s.cfg.WebhookURL, "application/json", bytes.NewReader(b))
 	if err != nil {
@@ -64,6 +38,49 @@ func (s *slackChannel) send(e collector.Event, _ string) error {
 		return fmt.Errorf("slack webhook: status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func slackPayload(e collector.Event) map[string]any {
+	emoji := severityEmoji(e.Severity)
+	resource := notificationText(e.Resource)
+	action := notificationText(e.Action)
+	source := notificationText(string(e.Source))
+	payload := map[string]any{
+		"text": fmt.Sprintf("%s [%s] %s -> %s (%s)",
+			emoji, strings.ToUpper(string(e.Severity)),
+			action, resource, source),
+		"blocks": []map[string]any{
+			{
+				"type": "section",
+				"text": map[string]any{
+					"type": "plain_text",
+					"text": fmt.Sprintf(
+						"%s Vigilo Immediate Alert -- %s\nAction: %s\nResource: %s\nSource: %s%s",
+						emoji,
+						strings.ToUpper(string(e.Severity)),
+						action, resource, source,
+						func() string {
+							if e.Process != "" {
+								context := fmt.Sprintf("\nProcess: %s (pid %d)", notificationText(e.Process), e.PID)
+								if e.PPID > 0 {
+									context += fmt.Sprintf("\nParent PID: %d", e.PPID)
+								}
+								if e.Executable != "" {
+									context += fmt.Sprintf("\nExecutable: %s", notificationText(e.Executable))
+								}
+								if e.User != "" {
+									context += fmt.Sprintf("\nUser ID: %s", notificationText(e.User))
+								}
+								return context
+							}
+							return ""
+						}(),
+					),
+				},
+			},
+		},
+	}
+	return payload
 }
 
 func severityEmoji(sev collector.Severity) string {

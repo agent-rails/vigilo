@@ -396,6 +396,8 @@ func (s *Server) handleECSEvents(_ context.Context, req mcp.CallToolRequest) (*m
 		case collector.SourceNetwork:
 			ev.Event.Category = []string{"network"}
 			ev.Network = &ecsNetwork{DestinationIP: e.Resource}
+		case collector.SourceHealth:
+			ev.Event.Category = []string{"host"}
 		}
 		if e.User != "" {
 			ev.User = &ecsUser{ID: e.User}

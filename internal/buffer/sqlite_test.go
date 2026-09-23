@@ -1,6 +1,7 @@
 package buffer_test
 
 import (
+	"database/sql"
 	"os"
 	"testing"
 	"time"
@@ -55,6 +56,73 @@ func TestInsertAndGet(t *testing.T) {
 	}
 	if events[0].Severity != collector.SeverityHigh {
 		t.Errorf("severity mismatch: got %q", events[0].Severity)
+	}
+}
+
+func TestExecutablePersists(t *testing.T) {
+	store := openTestStore(t)
+	event := makeEvent(collector.SourceProcess, "observed", "/tmp/systemupdate", collector.SeverityInfo)
+	event.Process = "systemupdate"
+	event.Executable = "/tmp/systemupdate"
+	if err := store.Insert(event); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(buffer.QueryOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Executable != event.Executable {
+		t.Fatalf("executable not preserved: %+v", got)
+	}
+}
+
+func TestOpenMigratesExecutableColumn(t *testing.T) {
+	f, err := os.CreateTemp("", "vigilo-old-schema-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	_ = f.Close()
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, timestamp TEXT NOT NULL,
+		pid INTEGER, ppid INTEGER, process TEXT, cmd_line TEXT, user_id TEXT,
+		action TEXT NOT NULL, resource TEXT NOT NULL, detail TEXT, severity TEXT NOT NULL)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO events (source,timestamp,pid,ppid,process,cmd_line,user_id,action,resource,detail,severity)
+		VALUES ('process', ?, 17, 1, 'isync', NULL, '1000', 'observed', '/tmp/isync', '', 'info')`,
+		time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := buffer.Open(path, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	legacy, err := store.List(buffer.QueryOptions{Since: time.Now().Add(-time.Minute), Limit: 10})
+	if err != nil || len(legacy) != 1 || legacy[0].Executable != "" {
+		t.Fatalf("existing row did not survive nullable executable migration: events=%+v err=%v", legacy, err)
+	}
+	event := makeEvent(collector.SourceProcess, "observed", "/tmp/isync", collector.SeverityInfo)
+	event.Executable = "/tmp/isync"
+	if err := store.Insert(event); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(buffer.QueryOptions{Limit: 10})
+	if err != nil || len(got) != 2 || got[0].Executable != event.Executable || got[1].Executable != "" {
+		t.Fatalf("old database migration did not preserve old and new executable values: events=%+v err=%v", got, err)
 	}
 }
 

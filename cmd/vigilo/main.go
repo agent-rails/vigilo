@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/voltagebots/vigilo/internal/alerter"
@@ -60,14 +59,16 @@ func main() {
 
 	// Build immediate alerter from config
 	dispatch := alerter.New(alerter.Config{
-		MinSeverity: cfg.Alerter.MinSeverity,
-		Cooldown:    cfg.SignalCooldown,
-		Slack:       toAlertSlack(cfg.Alerter.Slack),
-		Telegram:    toAlertTelegram(cfg.Alerter.Telegram),
-		Email:       toAlertEmail(cfg.Alerter.Email),
-		Webhooks:    toAlertWebhooks(cfg.Alerter.Webhooks),
-		Syslog:      toAlertSyslog(cfg.Alerter.Syslog),
+		MinSeverity:         cfg.Alerter.MinSeverity,
+		MinSeverityBySource: sourceSeverityOverrides(cfg.Alerter.MinSeverityBySource),
+		Cooldown:            cfg.SignalCooldown,
+		Slack:               toAlertSlack(cfg.Alerter.Slack),
+		Telegram:            toAlertTelegram(cfg.Alerter.Telegram),
+		Email:               toAlertEmail(cfg.Alerter.Email),
+		Webhooks:            toAlertWebhooks(cfg.Alerter.Webhooks),
+		Syslog:              toAlertSyslog(cfg.Alerter.Syslog),
 	})
+	alertQueue := alerter.NewDeliveryQueue(dispatch, 4, 128)
 
 	// Event bus — buffered to avoid blocking collectors.
 	events := make(chan collector.Event, 512)
@@ -112,10 +113,17 @@ func main() {
 		stopFns = append(stopFns, fileWatcher.Stop)
 	}
 
-	procWatcher := collector.NewProcessWatcher(cfg.PollInterval, events, suppress)
-	procWatcher.Start()
-	stopFns = append(stopFns, procWatcher.Stop)
-	slog.Info("process watcher started", "interval", cfg.PollInterval)
+	processEnabled := cfg.ProcessMonitor.Enabled == nil || *cfg.ProcessMonitor.Enabled
+	if processEnabled {
+		procWatcher := collector.NewProcessWatcher(cfg.PollInterval, events, suppress,
+			cfg.ProcessMonitor.ReportNewProcesses)
+		procWatcher.Start()
+		stopFns = append(stopFns, procWatcher.Stop)
+		slog.Info("process watcher started", "interval", cfg.PollInterval,
+			"report_new_processes", cfg.ProcessMonitor.ReportNewProcesses)
+	} else {
+		slog.Warn("process watcher disabled by process_monitor.enabled")
+	}
 
 	netWatcher := collector.NewNetworkWatcher(cfg.PollInterval, events, suppress)
 	if iocStore := buildIOCStore(cfg.IOC); !iocStore.Empty() {
@@ -191,11 +199,13 @@ func main() {
 	// Drain event bus → SQLite + immediate alerter.
 	// WaitGroup ensures all events are flushed before store.Close().
 	var drainWg sync.WaitGroup
-	var eventsDropped uint64
 	drainWg.Add(1)
 	go func() {
 		defer drainWg.Done()
 		for e := range events {
+			if webEnabled && e.Source == collector.SourceHealth {
+				webSrv.ReportCoverageIssue()
+			}
 			if err := store.Insert(e); err != nil {
 				slog.Error("failed to insert event", "err", err)
 				continue
@@ -212,14 +222,13 @@ func main() {
 			}
 			// Tier-1: fire immediately for high/critical events.
 			if dispatch.ShouldAlert(e) {
-				go func(ev collector.Event) {
-					dispatch.Fire(ev)
+				alertQueue.Submit(e, func() {
 					// Keep expvar metrics in sync with alerter counters.
 					if webEnabled {
 						s := dispatch.Stats()
 						webSrv.SetAlertCounters(s.AlertsSent, s.AlertsDropped)
 					}
-				}(e)
+				})
 			}
 		}
 	}()
@@ -305,9 +314,7 @@ func main() {
 	stopCollectors()
 	close(events)
 	drainWg.Wait()
-	if dropped := atomic.LoadUint64(&eventsDropped); dropped > 0 {
-		slog.Warn("events dropped during shutdown", "count", dropped)
-	}
+	alertQueue.Close()
 	if err := store.Close(); err != nil {
 		slog.Warn("store close error", "err", err)
 	}
@@ -343,6 +350,36 @@ func buildIOCStore(cfg config.IOCConfig) *collector.IOCStore {
 		})
 	}
 	return collector.NewIOCStore(ranges)
+}
+
+func sourceSeverityOverrides(values map[string]string) map[collector.EventSource]collector.Severity {
+	if len(values) == 0 {
+		return nil
+	}
+	validSources := map[collector.EventSource]bool{
+		collector.SourceFile: true, collector.SourceProcess: true,
+		collector.SourceNetwork: true, collector.SourceAuth: true,
+		collector.SourceSupplyChain: true, collector.SourceHealth: true,
+	}
+	validSeverities := map[collector.Severity]bool{
+		collector.SeverityInfo: true, collector.SeverityMedium: true,
+		collector.SeverityHigh: true, collector.SeverityCritical: true,
+	}
+	out := make(map[collector.EventSource]collector.Severity, len(values))
+	for source, severity := range values {
+		key := collector.EventSource(source)
+		level := collector.Severity(severity)
+		if !validSources[key] {
+			slog.Error("unknown source in alerter.min_severity_by_source; global threshold will apply", "source", source)
+			continue
+		}
+		if !validSeverities[level] {
+			slog.Error("unknown severity in alerter.min_severity_by_source; global threshold will apply", "source", source, "severity", severity)
+			continue
+		}
+		out[key] = level
+	}
+	return out
 }
 
 // Conversion helpers — keep config and alerter packages decoupled.

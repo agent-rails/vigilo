@@ -25,6 +25,11 @@ type Config struct {
 	// How often to poll /proc and network state
 	PollInterval time.Duration `yaml:"poll_interval"`
 
+	// ProcessMonitor controls whether process inventory is collected. Alert
+	// thresholds never enable a collector; report_new_processes opts into the
+	// potentially noisy inventory of every first-seen process.
+	ProcessMonitor ProcessMonitorConfig `yaml:"process_monitor"`
+
 	// SQLite buffer: keep last N hours of events
 	BufferRetentionHours int `yaml:"buffer_retention_hours"`
 
@@ -79,6 +84,11 @@ type Config struct {
 	// IOC configures indicator-of-compromise matching (known-bad IP ranges the
 	// network collector flags regardless of port).
 	IOC IOCConfig `yaml:"ioc"`
+}
+
+type ProcessMonitorConfig struct {
+	Enabled            *bool `yaml:"enabled"`
+	ReportNewProcesses bool  `yaml:"report_new_processes"`
 }
 
 // IOCConfig holds indicator-of-compromise indicators fed to collectors.
@@ -145,12 +155,13 @@ type TerraformEcosystemConfig struct {
 
 // AlerterConfig mirrors alerter.Config to avoid import cycles.
 type AlerterConfig struct {
-	MinSeverity string          `yaml:"min_severity"`
-	Slack       *SlackConfig    `yaml:"slack"`
-	Telegram    *TelegramConfig `yaml:"telegram"`
-	Email       *EmailConfig    `yaml:"email"`
-	Webhooks    []WebhookConfig `yaml:"webhooks"`
-	Syslog      *SyslogConfig   `yaml:"syslog"`
+	MinSeverity         string            `yaml:"min_severity"`
+	MinSeverityBySource map[string]string `yaml:"min_severity_by_source"`
+	Slack               *SlackConfig      `yaml:"slack"`
+	Telegram            *TelegramConfig   `yaml:"telegram"`
+	Email               *EmailConfig      `yaml:"email"`
+	Webhooks            []WebhookConfig   `yaml:"webhooks"`
+	Syslog              *SyslogConfig     `yaml:"syslog"`
 }
 
 type SyslogConfig struct {

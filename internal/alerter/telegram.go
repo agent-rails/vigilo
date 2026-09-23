@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 
@@ -29,22 +30,7 @@ func newTelegramChannel(cfg *TelegramConfig, client *http.Client) *telegramChann
 func (t *telegramChannel) name() string { return "telegram" }
 
 func (t *telegramChannel) send(e collector.Event, _ string) error {
-	sev := strings.ToUpper(string(e.Severity))
-
-	lines := []string{
-		fmt.Sprintf("<b>Vigilo Alert -- %s</b>", sev),
-		fmt.Sprintf("<b>Source:</b> %s", e.Source),
-		fmt.Sprintf("<b>Action:</b> <code>%s</code>", e.Action),
-		fmt.Sprintf("<b>Resource:</b> <code>%s</code>", e.Resource),
-	}
-	if e.Process != "" {
-		lines = append(lines, fmt.Sprintf("<b>Process:</b> <code>%s</code> (pid %d)", e.Process, e.PID))
-	}
-	if e.Detail != "" {
-		lines = append(lines, fmt.Sprintf("<b>Detail:</b> %s", e.Detail))
-	}
-	text := strings.Join(lines, "\n")
-
+	text := telegramMessage(e)
 	payload := map[string]any{
 		"chat_id":    t.cfg.ChatID,
 		"text":       text,
@@ -62,4 +48,31 @@ func (t *telegramChannel) send(e collector.Event, _ string) error {
 		return fmt.Errorf("telegram api: status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func telegramMessage(e collector.Event) string {
+	sev := strings.ToUpper(string(e.Severity))
+
+	lines := []string{
+		fmt.Sprintf("<b>Vigilo Alert -- %s</b>", sev),
+		fmt.Sprintf("<b>Source:</b> %s", html.EscapeString(notificationText(string(e.Source)))),
+		fmt.Sprintf("<b>Action:</b> <code>%s</code>", html.EscapeString(notificationText(e.Action))),
+		fmt.Sprintf("<b>Resource:</b> <code>%s</code>", html.EscapeString(notificationText(e.Resource))),
+	}
+	if e.Process != "" {
+		lines = append(lines, fmt.Sprintf("<b>Process:</b> <code>%s</code> (pid %d)", html.EscapeString(notificationText(e.Process)), e.PID))
+		if e.PPID > 0 {
+			lines = append(lines, fmt.Sprintf("<b>Parent PID:</b> %d", e.PPID))
+		}
+		if e.Executable != "" {
+			lines = append(lines, fmt.Sprintf("<b>Executable:</b> <code>%s</code>", html.EscapeString(notificationText(e.Executable))))
+		}
+		if e.User != "" {
+			lines = append(lines, fmt.Sprintf("<b>User ID:</b> <code>%s</code>", html.EscapeString(notificationText(e.User))))
+		}
+	}
+	if e.Detail != "" {
+		lines = append(lines, fmt.Sprintf("<b>Detail:</b> %s", html.EscapeString(notificationText(e.Detail))))
+	}
+	return strings.Join(lines, "\n")
 }

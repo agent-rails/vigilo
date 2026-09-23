@@ -19,6 +19,14 @@ exclude_paths:
 # How often to poll /proc and network state
 poll_interval: 5s
 
+# Process collection is enabled by default for known parent/child and identity
+# triage rules. Alert thresholds only control delivery; they do not enable
+# collection. Set report_new_processes to retain every first-seen process as an
+# info event (noisy, and polling may miss brief processes).
+process_monitor:
+  enabled: true
+  report_new_processes: false
+
 # Keep events in SQLite for this many hours (auto-purge after)
 buffer_retention_hours: 24
 
@@ -63,6 +71,11 @@ signal_cooldown: 1h
 alerter:
   # Minimum severity to trigger immediate alerts: "high" or "critical"
   min_severity: high
+  # Optional per-source override. Set to info to alert on every change under
+  # watch_paths; this can be noisy for active project and cache directories.
+  # min_severity_by_source:
+  #   file_access: info
+  #   process: info # deliver info-level process events; this does not enable inventory collection
 
   # Slack incoming webhook (no bot token needed)
   # Create at: Slack app → Features → Incoming Webhooks → Add New Webhook
@@ -104,9 +117,12 @@ alerter:
 # Only processes events matching audit rules with a "vigilo_" key prefix.
 #
 # Set up audit rules (run as root):
-#   auditctl -w /app/keystore -p rwa -k vigilo_keystore
-#   auditctl -w /run/secrets  -p rwa -k vigilo_secrets
+#   auditctl -w /app/keystore -p wa -k vigilo_keystore
+#   auditctl -w /run/secrets  -p wa -k vigilo_secrets
 #   auditctl -w /app/.env     -p wa  -k vigilo_env
+#   auditctl -a always,exit -F arch=b64 -S execve,execveat -k vigilo_exec
+# The exec rule above is an x86_64 example. Match `arch` to the host ABI;
+# it observes short-lived execs but may produce many events on a busy system.
 #
 # auditd_log_path: /var/log/audit/audit.log
 

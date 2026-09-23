@@ -26,11 +26,12 @@ func (s *syslogChannel) name() string { return "syslog" }
 func (s *syslogChannel) send(e collector.Event, _ string) error {
 	sev := cefSeverity(e.Severity)
 	cef := fmt.Sprintf(
-		"CEF:0|VoltageBot|Vigilo|1.0|%s|%s %s|%d|src=%s filePath=%s dproc=%s msg=%s",
-		e.Source,
-		e.Action, e.Resource,
+		"CEF:0|VoltageBot|Vigilo|1.0|%s|%s %s|%d|src=%s filePath=%s dproc=%s sourceProcessId=%d sourceUserId=%s sourceExecutable=%s msg=%s",
+		cefHeader(string(e.Source)),
+		cefHeader(e.Action), cefHeader(e.Resource),
 		sev,
-		e.Source, e.Resource, e.Process, e.Detail,
+		cefExtension(string(e.Source)), cefExtension(e.Resource), cefExtension(e.Process), e.PID,
+		cefExtension(e.User), cefExtension(e.Executable), cefExtension(e.Detail),
 	)
 
 	switch e.Severity {

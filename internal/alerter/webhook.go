@@ -30,14 +30,17 @@ func (w *webhookChannel) name() string { return "webhook:" + w.cfg.Name }
 
 func (w *webhookChannel) send(e collector.Event, _ string) error {
 	payload := map[string]any{
-		"source":    string(e.Source),
-		"timestamp": e.Timestamp.UTC().Format(time.RFC3339),
-		"action":    e.Action,
-		"resource":  e.Resource,
-		"severity":  string(e.Severity),
-		"process":   e.Process,
-		"pid":       e.PID,
-		"detail":    e.Detail,
+		"source":     string(e.Source),
+		"timestamp":  e.Timestamp.UTC().Format(time.RFC3339),
+		"action":     e.Action,
+		"resource":   e.Resource,
+		"severity":   string(e.Severity),
+		"process":    e.Process,
+		"executable": e.Executable,
+		"pid":        e.PID,
+		"ppid":       e.PPID,
+		"user_id":    e.User,
+		"detail":     e.Detail,
 	}
 	b, _ := json.Marshal(payload)
 

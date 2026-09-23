@@ -3,8 +3,10 @@ package alerter
 import (
 	"crypto/tls"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,13 +31,17 @@ type emailChannel struct {
 func newEmailChannel(cfg *EmailConfig) *emailChannel { return &emailChannel{cfg: cfg} }
 func (e *emailChannel) name() string                 { return "email" }
 
-func (ec *emailChannel) send(ev collector.Event, body string) error {
+func emailSubject(ev collector.Event) string {
 	sev := strings.ToUpper(string(ev.Severity))
-	subject := fmt.Sprintf("[Vigilo] %s Alert: %s %s", sev, ev.Action, ev.Resource)
+	return mime.QEncoding.Encode("UTF-8", fmt.Sprintf("[Vigilo] %s Alert: %s %s", sev, notificationText(ev.Action), notificationText(ev.Resource)))
+}
+
+func (ec *emailChannel) send(ev collector.Event, body string) error {
+	subject := emailSubject(ev)
 
 	msg := strings.Join([]string{
-		"From: " + ec.cfg.From,
-		"To: " + strings.Join(ec.cfg.To, ", "),
+		"From: " + notificationText(ec.cfg.From),
+		"To: " + notificationText(strings.Join(ec.cfg.To, ", ")),
 		"Subject: " + subject,
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=utf-8",
@@ -51,7 +57,7 @@ func (ec *emailChannel) send(ev collector.Event, body string) error {
 	if port == 0 {
 		port = 587
 	}
-	addr := fmt.Sprintf("%s:%d", ec.cfg.SMTPHost, port)
+	addr := net.JoinHostPort(ec.cfg.SMTPHost, strconv.Itoa(port))
 	auth := smtp.PlainAuth("", ec.cfg.Username, ec.cfg.Password, ec.cfg.SMTPHost)
 
 	if port == 465 {
@@ -64,6 +70,7 @@ func (ec *emailChannel) send(ev collector.Event, body string) error {
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	c, err := smtp.NewClient(conn, ec.cfg.SMTPHost)
 	if err != nil {
 		conn.Close()
@@ -101,6 +108,7 @@ func (ec *emailChannel) sendTLS(addr string, auth smtp.Auth, msg string) error {
 	if err != nil {
 		return fmt.Errorf("smtp tls dial: %w", err)
 	}
+	_ = rawConn.SetDeadline(time.Now().Add(15 * time.Second))
 
 	tlsCfg := &tls.Config{ServerName: ec.cfg.SMTPHost}
 	conn := tls.Client(rawConn, tlsCfg)

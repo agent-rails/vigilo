@@ -25,6 +25,9 @@ type SyslogConfig struct {
 type Config struct {
 	// Minimum severity to trigger immediate alerts: "high" or "critical"
 	MinSeverity string `yaml:"min_severity"`
+	// MinSeverityBySource optionally overrides MinSeverity for specific event
+	// sources. Unspecified sources retain the global threshold.
+	MinSeverityBySource map[collector.EventSource]collector.Severity `yaml:"min_severity_by_source"`
 
 	// Cooldown between repeat alerts for the same event fingerprint. Zero is
 	// a real, meaningful value here (no cooldown -- fire on every match);
@@ -126,16 +129,25 @@ func (d *Dispatcher) Stats() Stats {
 	}
 }
 
+func (d *Dispatcher) recordQueueDrop() {
+	atomic.AddUint64(&d.alertsDropped, 1)
+}
+
 // ShouldAlert returns true if the event severity meets the configured threshold.
 func (d *Dispatcher) ShouldAlert(e collector.Event) bool {
 	if len(d.channels) == 0 {
 		return false
 	}
 	minSev := collector.Severity(d.cfg.MinSeverity)
+	if sourceMin, ok := d.cfg.MinSeverityBySource[e.Source]; ok && sourceMin != "" {
+		minSev = sourceMin
+	}
 	if minSev == "" {
 		minSev = collector.SeverityHigh
 	}
-	return severityRank[e.Severity] >= severityRank[minSev]
+	severity, knownSeverity := severityRank[e.Severity]
+	threshold, knownThreshold := severityRank[minSev]
+	return knownSeverity && knownThreshold && severity >= threshold
 }
 
 // failureBackoff caps how long a delivery that reached nobody may suppress the
@@ -283,6 +295,8 @@ func fingerprintClass(action string) string {
 	switch action {
 	case actionRemove, actionRename:
 		return classTerminal
+	case "delete":
+		return classTerminal
 	default:
 		return classMutate
 	}
@@ -292,7 +306,18 @@ func fingerprintClass(action string) string {
 // the action class (see fingerprintClass) and the resource.
 func eventFingerprint(e collector.Event) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s:%s:%s", e.Source, fingerprintClass(e.Action), e.Resource)
+	action := fingerprintClass(e.Action)
+	// Process inventory is intentionally low severity and may be enabled as
+	// context. It must not reserve the same cooldown fingerprint as a later
+	// identity mismatch or suspicious spawn for that executable.
+	if e.Source == collector.SourceProcess {
+		action = e.Action
+	}
+	if e.Source == collector.SourceProcess {
+		fmt.Fprintf(h, "%s:%s:%s:%s", e.Source, action, e.Severity, e.Resource)
+	} else {
+		fmt.Fprintf(h, "%s:%s:%s", e.Source, action, e.Resource)
+	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
@@ -302,15 +327,26 @@ func formatAlert(e collector.Event) string {
 	lines := []string{
 		fmt.Sprintf("VIGILO ALERT -- %s", sev),
 		fmt.Sprintf("Source:   %s", e.Source),
-		fmt.Sprintf("Action:   %s", e.Action),
-		fmt.Sprintf("Resource: %s", e.Resource),
+		fmt.Sprintf("Action:   %s", notificationText(e.Action)),
+		fmt.Sprintf("Resource: %s", notificationText(e.Resource)),
 		fmt.Sprintf("Time:     %s", ts),
 	}
 	if e.Process != "" {
-		lines = append(lines, fmt.Sprintf("Process:  %s (pid %d)", e.Process, e.PID))
+		process := fmt.Sprintf("%s (pid %d", notificationText(e.Process), e.PID)
+		if e.PPID != 0 {
+			process += fmt.Sprintf(", parent pid %d", e.PPID)
+		}
+		process += ")"
+		if e.Executable != "" {
+			process += " executable=" + notificationText(e.Executable)
+		}
+		if e.User != "" {
+			process += " uid=" + e.User
+		}
+		lines = append(lines, "Process:  "+process)
 	}
 	if e.Detail != "" {
-		lines = append(lines, fmt.Sprintf("Detail:   %s", e.Detail))
+		lines = append(lines, fmt.Sprintf("Detail:   %s", notificationText(e.Detail)))
 	}
 	return strings.Join(lines, "\n")
 }

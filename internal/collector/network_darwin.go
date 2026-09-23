@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,8 @@ type NetworkWatcher struct {
 	out      chan<- Event
 	seen     map[connKey]struct{}
 	stop     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // SetIOCStore attaches an indicator-of-compromise store consulted on every new
@@ -62,10 +65,17 @@ func NewNetworkWatcher(interval time.Duration, out chan<- Event, suppress ...*Su
 	}
 }
 
-func (nw *NetworkWatcher) Start() { go nw.loop() }
-func (nw *NetworkWatcher) Stop()  { close(nw.stop) }
+func (nw *NetworkWatcher) Start() {
+	nw.wg.Add(1)
+	go nw.loop()
+}
+func (nw *NetworkWatcher) Stop() {
+	nw.stopOnce.Do(func() { close(nw.stop) })
+	nw.wg.Wait()
+}
 
 func (nw *NetworkWatcher) loop() {
+	defer nw.wg.Done()
 	ticker := time.NewTicker(nw.interval)
 	defer ticker.Stop()
 	nw.scan(false)
