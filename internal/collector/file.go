@@ -164,10 +164,17 @@ func (fw *FileWatcher) loop() {
 					}
 				}
 			}
-			// New subdirectory created — start watching it
+			// New subdirectory created — watch it and everything already
+			// inside it. `mkdir -p a/b/c` creates the whole tree before the
+			// watch on the parent can be extended, so only `a` yields a
+			// Create; adding `a` alone leaves `b` and `c` unwatched forever
+			// and files written there are invisible. Walking catches up,
+			// because by the time this runs the tree exists.
 			if event.Has(fsnotify.Create) {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-					_ = fw.watcher.Add(event.Name)
+					if err := fw.addRecursive(event.Name); err != nil {
+						slog.Warn("file watcher: cannot watch new directory", "path", event.Name, "err", err)
+					}
 				}
 			}
 

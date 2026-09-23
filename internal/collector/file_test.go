@@ -257,3 +257,50 @@ func drainEvents(t *testing.T, events <-chan Event) {
 		}
 	}
 }
+
+// TestFileWatcherWatchesDeepDirectoryCreatedAfterStart confirms a tree created
+// in one mkdir -p is watched all the way down. Only the top level yields a
+// Create event — the intermediate directories already exist by the time it
+// arrives — so adding just that level left the leaves unwatched and files
+// written there invisible.
+func TestFileWatcherWatchesDeepDirectoryCreatedAfterStart(t *testing.T) {
+	dir := t.TempDir()
+
+	events := make(chan Event, 32)
+	watcher, err := NewFileWatcher([]string{dir}, nil, events)
+	if err != nil {
+		t.Fatalf("NewFileWatcher: %v", err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer watcher.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	deep := filepath.Join(dir, "deep", "nested", "tree")
+	if err := os.MkdirAll(deep, 0700); err != nil {
+		t.Fatalf("mkdir -p: %v", err)
+	}
+	drainEvents(t, events)
+
+	targetFile := filepath.Join(deep, "wallet.json")
+	if err := os.WriteFile(targetFile, []byte(`{"key":"secret"}`), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case e := <-events:
+			if e.Resource == targetFile {
+				if e.Severity != SeverityCritical {
+					t.Errorf("severity = %q, want critical for wallet.json", e.Severity)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout: no event for a file written inside a deep directory created after startup")
+		}
+	}
+}
