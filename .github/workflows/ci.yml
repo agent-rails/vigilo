@@ -7,6 +7,24 @@ on:
     branches: [main]
 
 jobs:
+  package:
+    name: release archive smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: '~> v2'
+          args: release --snapshot --clean
+      - name: Install archive and verify systemd alert delivery
+        run: sudo env CI=true bash scripts/smoke-release.sh dist/vigilo_*_linux_amd64.tar.gz
+
   go:
     name: go build & test
     runs-on: ubuntu-latest

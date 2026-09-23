@@ -1,6 +1,6 @@
 [Unit]
 Description=Vigilo Security Daemon
-Documentation=https://github.com/voltagebots/vigilo
+Documentation=https://github.com/agent-rails/vigilo
 After=network.target
 Wants=network.target
 
@@ -25,7 +25,8 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/vigilo
 ReadOnlyPaths=/etc/vigilo
 # Allow reading watched paths (add your app dirs here if not under /home or /run)
-ReadOnlyPaths=/home /run/secrets /app
+# Missing example paths must not prevent startup on a fresh host.
+ReadOnlyPaths=-/home -/run/secrets -/app
 
 CapabilityBoundingSet=
 AmbientCapabilities=

@@ -1,6 +1,7 @@
 # vigilo daemon configuration
 
-# Paths to watch for sensitive file access.
+# Paths to watch for file creates/writes (not reads). Use absolute paths readable
+# by the service user; its $HOME is not your login user's home directory.
 watch_paths:
   - $HOME/.ethereum
   - $HOME/.bitcoin
@@ -57,7 +58,7 @@ mcp_transport: stdio
 signal_cooldown: 1h
 
 # ── Immediate alerter ─────────────────────────────────────────────────────────
-# Fires within seconds of detection — no LLM, pure rule-based.
+# Dispatches on collected events — no LLM, pure rule-based; delivery time varies.
 # The LLM analyst agent still runs on its own schedule for pattern correlation.
 alerter:
   # Minimum severity to trigger immediate alerts: "high" or "critical"
@@ -114,7 +115,7 @@ alerter:
 suppress_rules:
   - match: /var/backups/
     source: file_access
-    reason: "nightly backup job reads credential dirs"
+    reason: "known backup output writes"
 
   - match: datadog-agent
     source: process
@@ -122,7 +123,7 @@ suppress_rules:
 
   - match: /etc/vigilo/
     source: file_access
-    reason: "vigilo reads its own config on reload"
+    reason: "operator-managed configuration writes"
 
 # ── Supply-chain guard ────────────────────────────────────────────────────────
 # Scans dependency manifests, lockfiles, and package-manager CLI config for the

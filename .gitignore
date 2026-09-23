@@ -6,3 +6,4 @@ agent/.env
 *.db-wal
 *.db-shm
 /vigilo
+/dist/

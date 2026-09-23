@@ -2,7 +2,9 @@
 
 > *Latin: "I watch. I am vigilant."*
 
-OS-level security daemon for crypto infrastructure. Monitors file access, process spawns, and network connections in real time — alerts your team **before an attacker reaches the chain**.
+OS-level observation and alerting for crypto infrastructure. Vigilo collects filesystem create/write events, polls process and network activity, and can scan npm and Terraform configuration for suspicious changes. Rule-based alerts run in the daemon; an optional LLM analyst queries its event history through MCP.
+
+Vigilo does not block attacks or guarantee detection. The default file watcher does **not** detect file reads or identify the process responsible for a change. Linux audit-log ingestion is a separate, opt-in collector that requires configured audit rules and permission to read the log. See [SECURITY.md](SECURITY.md) for coverage limits.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -20,12 +22,12 @@ OS-level security daemon for crypto infrastructure. Monitors file access, proces
 
 ## Two-tier alerting
 
-| Tier | Latency | Mechanism | Triggers on |
+| Tier | Timing | Mechanism | Triggers on |
 |---|---|---|---|
-| **Immediate** | ~1 second | Daemon pushes directly | Any `high` / `critical` event |
-| **LLM analysis** | ~5 minutes | Claude correlates event sequences | Attack patterns, cross-server campaigns |
+| **Immediate** | On a collected event; delivery depends on the channel | Daemon pushes directly | Events meeting the configured severity threshold and cooldown |
+| **LLM analysis** | Every 5 minutes by default | Claude queries and analyses event sequences | Candidate patterns across the configured hosts |
 
-This means a private key access fires a Telegram push **within seconds**, while Claude still analyses the full pattern window to catch multi-step attacks.
+Collection and immediate alerting continue if the MCP transport closes. `/healthz` reports `mcp_transport_up` separately from daemon health. Process and network collectors sample state, so activity shorter than the polling interval can be missed. LLM conclusions require investigation; they are not proof of compromise.
 
 ---
 
@@ -33,7 +35,7 @@ This means a private key access fires a Telegram push **within seconds**, while 
 
 | Signal | Tier | Severity |
 |---|---|---|
-| Private key / keystore file read | Immediate + LLM | Critical |
+| Private key / keystore file created or written | Immediate + LLM | Critical |
 | `.env` or secret file written | Immediate + LLM | High |
 | Shell spawned from node/python (RCE) | LLM | High |
 | Outbound connection to suspicious port | Immediate + LLM | High |
@@ -67,18 +69,28 @@ vigilo (Go daemon)              vigilo-agent (TypeScript)
 
 ## Quick start
 
-### 1. Build the daemon
+### 1. Install the daemon
+
+Download the archive for your OS and CPU from [Releases](https://github.com/agent-rails/vigilo/releases). On Linux with systemd, for example:
 
 ```bash
-git clone https://github.com/voltagebots/vigilo && cd vigilo
-go build -o /usr/local/bin/vigilo ./cmd/vigilo/
+tar xzf vigilo_0.2.0_linux_amd64.tar.gz
+sudo bash deploy/install.sh
+```
+
+The archive contains the compiled daemon; Go is not required. The installer preserves existing configuration and enables the service without starting or restarting it. Verify the archive against the release's `checksums.txt` before installation. For ARM64 use the `linux_arm64` archive.
+
+For a source install, Go 1.25+ is required:
+
+```bash
+git clone https://github.com/agent-rails/vigilo && cd vigilo
+sudo bash deploy/install.sh
 ```
 
 ### 2. Configure
 
 ```bash
-cp config.example.yaml /etc/vigilo/config.yaml
-mkdir -p /var/lib/vigilo
+sudoedit /etc/vigilo/config.yaml
 ```
 
 Minimum config — edit `/etc/vigilo/config.yaml`:
@@ -89,6 +101,9 @@ watch_paths:
   - /app/.env
   - /run/secrets
 
+mcp_transport: http
+mcp_addr: "127.0.0.1:7070"
+
 alerter:
   min_severity: high
   telegram:
@@ -98,29 +113,20 @@ alerter:
     webhook_url: https://hooks.slack.com/services/...
 ```
 
+Use real absolute paths readable by the `vigilo` service user. Prefer watching a parent directory when applications replace files atomically. Put `VIGILO_MCP_TOKEN=<a generated token>` in `/etc/vigilo/env` (mode 0600); the MCP client must use the same token. Generate one with `openssl rand -hex 32`. Put alert credentials there too, using the variables listed below.
+
+For collection without an MCP client, `mcp_transport: stdio` remains usable under systemd: stdin EOF is logged as transport unavailable and collection continues.
+
 ### 3. Run as a systemd service
 
-```ini
-# /etc/systemd/system/vigilo.service
-[Unit]
-Description=Vigilo Security Daemon
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/vigilo -config /etc/vigilo/config.yaml -db /var/lib/vigilo/events.db
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
+The installer places the hardened unit at `/etc/systemd/system/vigilo.service`. After configuring paths and alerts:
 
 ```bash
-systemctl enable --now vigilo
-journalctl -u vigilo -f
+sudo systemctl restart vigilo
+sudo journalctl -u vigilo -f
 ```
+
+On macOS, extract the matching Darwin archive, edit a local copy of `config.example.yaml`, and run `./vigilo -config ./config.yaml -db ./events.db`. The systemd installer is Linux-only.
 
 ### 4. Run the LLM analyst agent (optional but recommended)
 
@@ -130,8 +136,10 @@ The agent connects to the daemon via MCP and runs Claude to detect multi-step at
 cd agent
 cp .env.example .env
 # Fill in: ANTHROPIC_API_KEY, SLACK_BOT_TOKEN, VIGILO_ALERT_CHANNEL
-npm install && npm run dev
+npm ci && npm run dev
 ```
+
+The release archives contain the daemon only. Get `agent/` from a source checkout. For a separately running service set `VIGILO_MCP_URL=http://127.0.0.1:7070` and the matching `VIGILO_MCP_TOKEN` in `agent/.env`.
 
 ### 5. Multi-server setup (Tailscale)
 
@@ -164,6 +172,7 @@ The daemon exposes six tools to any MCP-compatible client:
 | `get_process_events` | Process spawn events only |
 | `get_network_events` | Outbound connection events only |
 | `get_critical_events` | High + critical severity — rapid triage |
+| `get_events_ecs` | Events in Elastic Common Schema format |
 
 ---
 
@@ -188,7 +197,7 @@ Drop known-safe events before they reach the buffer:
 suppress_rules:
   - match: /var/backups/
     source: file_access
-    reason: "nightly backup reads credential dirs"
+    reason: "known backup output writes"
   - match: datadog-agent
     source: process
     reason: "observability agent — known safe"
