@@ -13,6 +13,7 @@ const (
 	SourceNetwork     EventSource = "network"
 	SourceAuth        EventSource = "auth"
 	SourceSupplyChain EventSource = "supply_chain"
+	SourceHealth      EventSource = "collector_health"
 )
 
 type Severity string
@@ -31,11 +32,12 @@ type Event struct {
 	Timestamp time.Time   `json:"timestamp"`
 
 	// Process context
-	PID     int    `json:"pid,omitempty"`
-	PPID    int    `json:"ppid,omitempty"`
-	Process string `json:"process,omitempty"` // e.g. "node", "python3"
-	CmdLine string `json:"cmd_line,omitempty"`
-	User    string `json:"user,omitempty"`
+	PID        int    `json:"pid,omitempty"`
+	PPID       int    `json:"ppid,omitempty"`
+	Process    string `json:"process,omitempty"`    // e.g. "node", "python3"
+	Executable string `json:"executable,omitempty"` // observed executable path when the OS exposes it
+	CmdLine    string `json:"cmd_line,omitempty"`
+	User       string `json:"user,omitempty"`
 
 	// Event specifics
 	Action   string `json:"action"`           // e.g. "read", "connect", "spawn", "write"

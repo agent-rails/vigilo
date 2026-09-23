@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS events (
 	pid       INTEGER,
 	ppid      INTEGER,
 	process   TEXT,
+	executable TEXT,
 	cmd_line  TEXT,
 	user_id   TEXT,
 	action    TEXT    NOT NULL,
@@ -63,9 +64,52 @@ func Open(path string, retentionHours int) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := ensureColumn(db, "events", "executable"); err != nil {
+		return nil, fmt.Errorf("migrate executable column: %w", err)
+	}
 	s := &Store{db: db, retentionHours: retentionHours}
 	go s.pruneLoop()
 	return s, nil
+}
+
+func ensureColumn(db *sql.DB, table, column string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		if column == "executable" {
+			_, err := db.Exec("UPDATE " + table + " SET " + column + " = '' WHERE " + column + " IS NULL")
+			return err
+		}
+		return nil
+	}
+	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " TEXT")
+	if err == nil && column == "executable" {
+		_, err = db.Exec("UPDATE " + table + " SET " + column + " = '' WHERE " + column + " IS NULL")
+	}
+	return err
 }
 
 // Close shuts down the underlying database connection.
@@ -75,10 +119,10 @@ func (s *Store) Close() error {
 
 func (s *Store) Insert(e collector.Event) error {
 	_, err := s.db.Exec(`
-		INSERT INTO events (source,timestamp,pid,ppid,process,cmd_line,user_id,action,resource,detail,severity)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		INSERT INTO events (source,timestamp,pid,ppid,process,executable,cmd_line,user_id,action,resource,detail,severity)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		string(e.Source), e.Timestamp.UTC().Format(time.RFC3339Nano),
-		e.PID, e.PPID, e.Process, e.CmdLine, e.User,
+		e.PID, e.PPID, e.Process, e.Executable, e.CmdLine, e.User,
 		e.Action, e.Resource, e.Detail, string(e.Severity),
 	)
 	return err
@@ -102,7 +146,7 @@ func (s *Store) List(opts QueryOptions) ([]collector.Event, error) {
 		opts.Limit = 1000
 	}
 
-	query := `SELECT id,source,timestamp,pid,ppid,process,cmd_line,user_id,action,resource,detail,severity
+	query := `SELECT id,source,timestamp,pid,ppid,process,executable,cmd_line,user_id,action,resource,detail,severity
 	          FROM events WHERE timestamp >= ?`
 	args := []any{opts.Since.UTC().Format(time.RFC3339Nano)}
 
@@ -148,13 +192,22 @@ func (s *Store) List(opts QueryOptions) ([]collector.Event, error) {
 	for rows.Next() {
 		var e collector.Event
 		var tsStr, source, severity string
+		var pid, ppid sql.NullInt64
+		var process, executable, cmdLine, userID, detail sql.NullString
 		if err := rows.Scan(
 			&e.ID, &source, &tsStr,
-			&e.PID, &e.PPID, &e.Process, &e.CmdLine, &e.User,
-			&e.Action, &e.Resource, &e.Detail, &severity,
+			&pid, &ppid, &process, &executable, &cmdLine, &userID,
+			&e.Action, &e.Resource, &detail, &severity,
 		); err != nil {
 			return nil, err
 		}
+		if pid.Valid {
+			e.PID = int(pid.Int64)
+		}
+		if ppid.Valid {
+			e.PPID = int(ppid.Int64)
+		}
+		e.Process, e.Executable, e.CmdLine, e.User, e.Detail = process.String, executable.String, cmdLine.String, userID.String, detail.String
 		e.Source = collector.EventSource(source)
 		e.Severity = collector.Severity(severity)
 		e.Timestamp, _ = time.Parse(time.RFC3339Nano, tsStr)

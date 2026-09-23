@@ -55,6 +55,7 @@ type SupplyChainGuard struct {
 	seen       map[string]time.Time // dedup with expiry: see findingTTL
 	stop       chan struct{}
 	stopOnce   sync.Once
+	wg         sync.WaitGroup
 }
 
 // NewSupplyChainGuard validates the scan roots up front. A root that expands to
@@ -106,10 +107,16 @@ func NewSupplyChainGuard(roots []string, interval time.Duration, ecosystems []Ec
 // missing, which is when the operator most needs to know.
 func (g *SupplyChainGuard) Roots() []string { return g.roots }
 
-func (g *SupplyChainGuard) Start() { go g.loop() }
+func (g *SupplyChainGuard) Start() {
+	g.wg.Add(1)
+	go g.loop()
+}
 
 // Stop is idempotent — a second call must not panic on a closed channel.
-func (g *SupplyChainGuard) Stop() { g.stopOnce.Do(func() { close(g.stop) }) }
+func (g *SupplyChainGuard) Stop() {
+	g.stopOnce.Do(func() { close(g.stop) })
+	g.wg.Wait()
+}
 
 // stopping reports whether Stop has been called, so long walks can bail out.
 func (g *SupplyChainGuard) stopping() bool {
@@ -122,6 +129,7 @@ func (g *SupplyChainGuard) stopping() bool {
 }
 
 func (g *SupplyChainGuard) loop() {
+	defer g.wg.Done()
 	ticker := time.NewTicker(g.interval)
 	defer ticker.Stop()
 	g.scan()

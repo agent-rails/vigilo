@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/voltagebots/vigilo/internal/buffer"
@@ -90,5 +91,24 @@ func TestHealthAndMetricsAreUnauthenticatedByDesign(t *testing.T) {
 		if code := get(t, srv, path, nil); code == http.StatusUnauthorized {
 			t.Errorf("%s must stay reachable without a token, got %d", path, code)
 		}
+	}
+}
+
+func TestHealthSeparatesLivenessFromCoverage(t *testing.T) {
+	srv := newServer(t, "s3cret")
+	request := func() string {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("health status = %d", rec.Code)
+		}
+		return rec.Body.String()
+	}
+	if body := request(); !strings.Contains(body, `"status":"ok"`) || !strings.Contains(body, `"coverage_status":"unknown"`) {
+		t.Fatalf("initial health response overstates coverage: %s", body)
+	}
+	srv.ReportCoverageIssue()
+	if body := request(); !strings.Contains(body, `"status":"ok"`) || !strings.Contains(body, `"coverage_status":"degraded"`) {
+		t.Fatalf("coverage issue not exposed independently of liveness: %s", body)
 	}
 }

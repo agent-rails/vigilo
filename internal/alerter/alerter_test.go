@@ -2,12 +2,72 @@ package alerter
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/voltagebots/vigilo/internal/collector"
 )
+
+type blockingAlertChannel struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingAlertChannel) name() string { return "blocking" }
+func (c *blockingAlertChannel) send(collector.Event, string) error {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	<-c.release
+	return nil
+}
+
+func TestDeliveryQueueBoundsSlowChannelBacklog(t *testing.T) {
+	d := New(Config{MinSeverity: "high"})
+	blocking := &blockingAlertChannel{started: make(chan struct{}, 1), release: make(chan struct{})}
+	d.channels = []channel{blocking}
+	queue := NewDeliveryQueue(d, 1, 1)
+	if !queue.Submit(fileEvent("write", "/tmp/one"), nil) {
+		t.Fatal("first event should be accepted")
+	}
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start delivery")
+	}
+	if !queue.Submit(fileEvent("write", "/tmp/two"), nil) {
+		t.Fatal("second event should occupy the one-slot queue")
+	}
+	if queue.Submit(fileEvent("write", "/tmp/three"), nil) {
+		t.Fatal("event should be dropped once the bounded queue is full")
+	}
+	if got := d.Stats().AlertsDropped; got != 1 {
+		t.Fatalf("dropped count = %d, want 1", got)
+	}
+	close(blocking.release)
+	queue.Close()
+}
+
+func TestDeliveryQueueShutdownHasDeadline(t *testing.T) {
+	d := New(Config{MinSeverity: "high"})
+	blocking := &blockingAlertChannel{started: make(chan struct{}, 1), release: make(chan struct{})}
+	d.channels = []channel{blocking}
+	queue := NewDeliveryQueue(d, 1, 1)
+	queue.Submit(fileEvent("write", "/tmp/one"), nil)
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start delivery")
+	}
+	if queue.closeWithin(10 * time.Millisecond) {
+		t.Fatal("shutdown should report a worker that exceeded its deadline")
+	}
+	close(blocking.release)
+	queue.workers.Wait()
+}
 
 // fakeChannel records every send() call for assertions -- avoids a real
 // network call while still exercising Fire()'s real dedup/dispatch logic.
@@ -66,6 +126,14 @@ func fileEvent(action, resource string) collector.Event {
 	}
 }
 
+func TestProcessInventoryDoesNotSuppressLaterSecuritySignal(t *testing.T) {
+	observed := collector.Event{Source: collector.SourceProcess, Action: "observed", Resource: "/tmp/worker"}
+	suspicious := collector.Event{Source: collector.SourceProcess, Action: "spawn", Resource: "/tmp/worker"}
+	if eventFingerprint(observed) == eventFingerprint(suspicious) {
+		t.Fatal("low-severity inventory event shares dedup identity with later process security signal")
+	}
+}
+
 func dedupExpiry(t *testing.T, d *Dispatcher, e collector.Event) time.Time {
 	t.Helper()
 	fp := eventFingerprint(e)
@@ -114,6 +182,39 @@ func TestNegativeCooldownUsesPackageDefault(t *testing.T) {
 	}
 	if d.cfg.Cooldown != 15*time.Minute {
 		t.Fatalf("Cooldown = %v, want the resolved 15m default", d.cfg.Cooldown)
+	}
+}
+
+func TestSourceSeverityOverrideCanAlertOnOrdinaryFileChanges(t *testing.T) {
+	d := New(Config{
+		MinSeverity: string(collector.SeverityHigh),
+		MinSeverityBySource: map[collector.EventSource]collector.Severity{
+			collector.SourceFile: collector.SeverityInfo,
+		},
+	})
+	d.channels = []channel{&fakeChannel{}}
+
+	if !d.ShouldAlert(collector.Event{Source: collector.SourceFile, Severity: collector.SeverityInfo}) {
+		t.Fatal("info-level file event should pass the per-source override")
+	}
+	if d.ShouldAlert(collector.Event{Source: collector.SourceProcess, Severity: collector.SeverityInfo}) {
+		t.Fatal("file override must not lower the process threshold")
+	}
+	if !d.ShouldAlert(collector.Event{Source: collector.SourceProcess, Severity: collector.SeverityHigh}) {
+		t.Fatal("unspecified source should retain the global threshold")
+	}
+}
+
+func TestFormatAlertIncludesFileChangeActorIdentity(t *testing.T) {
+	message := formatAlert(collector.Event{
+		Source: collector.SourceFile, Action: "write", Resource: "/home/alex/project/.env",
+		Process: "node", PID: 51, PPID: 50, User: "1000", Executable: "/usr/bin/node",
+		Severity: collector.SeverityMedium, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	for _, expected := range []string{"node (pid 51, parent pid 50)", "executable=/usr/bin/node", "uid=1000"} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted alert missing %q:\n%s", expected, message)
+		}
 	}
 }
 

@@ -34,7 +34,8 @@ var (
 	// keeps collecting and alerting either way, so without a gauge the loss of
 	// the analyst tier is a single log line that scrolls away — silent
 	// non-coverage, which is the characteristic failure of this class of tool.
-	metricMCPTransportUp = expvar.NewInt("vigilo_mcp_transport_up")
+	metricMCPTransportUp   = expvar.NewInt("vigilo_mcp_transport_up")
+	metricCoverageDegraded = expvar.NewInt("vigilo_coverage_degraded")
 )
 
 // SetMCPTransportUp records whether the MCP query transport is serving.
@@ -82,12 +83,14 @@ func (l *ipLimiters) get(ip string) *rate.Limiter {
 
 // Server serves the Vigilo web dashboard.
 type Server struct {
-	store       *buffer.Store
-	mux         *http.ServeMux
-	cfg         Config
-	broadcaster *Broadcaster
-	startTime   time.Time
-	limiters    ipLimiters
+	store          *buffer.Store
+	mux            *http.ServeMux
+	cfg            Config
+	broadcaster    *Broadcaster
+	startTime      time.Time
+	limiters       ipLimiters
+	coverageMu     sync.RWMutex
+	coverageStatus string
 }
 
 // New creates a Server. cfg.Token falls back to VIGILO_WEB_TOKEN env var.
@@ -96,12 +99,13 @@ func New(store *buffer.Store, cfg Config) *Server {
 		cfg.Token = os.Getenv("VIGILO_WEB_TOKEN")
 	}
 	s := &Server{
-		store:       store,
-		mux:         http.NewServeMux(),
-		cfg:         cfg,
-		broadcaster: NewBroadcaster(),
-		startTime:   time.Now(),
-		limiters:    ipLimiters{m: make(map[string]*rate.Limiter)},
+		store:          store,
+		mux:            http.NewServeMux(),
+		cfg:            cfg,
+		broadcaster:    NewBroadcaster(),
+		startTime:      time.Now(),
+		limiters:       ipLimiters{m: make(map[string]*rate.Limiter)},
+		coverageStatus: "unknown",
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealth)
@@ -110,6 +114,16 @@ func New(store *buffer.Store, cfg Config) *Server {
 	s.mux.HandleFunc("/api/events", s.authMiddleware(s.handleEvents))
 	s.mux.HandleFunc("/", s.authMiddleware(s.handleDashboard))
 	return s
+}
+
+// ReportCoverageIssue marks collection coverage degraded. It is conservative:
+// the status is not reset automatically because a later successful event does
+// not prove that missed events were recovered.
+func (s *Server) ReportCoverageIssue() {
+	s.coverageMu.Lock()
+	s.coverageStatus = "degraded"
+	s.coverageMu.Unlock()
+	metricCoverageDegraded.Set(1)
 }
 
 // Broadcast publishes an event to all SSE subscribers and increments the counter.
@@ -208,9 +222,12 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	uptime := int64(time.Since(s.startTime).Seconds())
 	count, _ := s.store.CountSince(time.Now().Add(-24 * time.Hour))
+	s.coverageMu.RLock()
+	coverage := s.coverageStatus
+	s.coverageMu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","uptime_seconds":%d,"events_buffered":%d,"mcp_transport_up":%t}`,
-		uptime, count, metricMCPTransportUp.Value() == 1)
+	fmt.Fprintf(w, `{"status":"ok","coverage_status":%q,"uptime_seconds":%d,"events_buffered":%d,"mcp_transport_up":%t}`,
+		coverage, uptime, count, metricMCPTransportUp.Value() == 1)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -228,7 +245,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 var validSources = map[string]bool{
-	"file_access": true, "process": true, "network": true,
+	"file_access": true, "process": true, "network": true, "collector_health": true,
 }
 
 var validSeverities = map[string]bool{
@@ -266,7 +283,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	srcFilter := q.Get("source")
 	if srcFilter != "" && !validSources[srcFilter] {
-		jsonError(w, "invalid 'source' — must be file_access|process|network", http.StatusBadRequest)
+		jsonError(w, "invalid 'source' — must be file_access|process|network|collector_health", http.StatusBadRequest)
 		return
 	}
 

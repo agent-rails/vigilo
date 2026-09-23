@@ -3,6 +3,7 @@ package collector
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +79,246 @@ func TestFileWatcherDetectsWrite(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout: no event received after writing wallet.json")
+	}
+}
+
+func TestFileWatcherReportsMissingConfiguredRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	events := make(chan Event, 2)
+	watcher, err := NewFileWatcher([]string{missing}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Source != SourceHealth || event.Action != "watch_start_failed" || event.Resource != missing {
+			t.Fatalf("unexpected coverage event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing configured root did not produce a coverage event")
+	}
+}
+
+func TestFileWatcherReportsSymlinkRootAsUncovered(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "actual")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	events := make(chan Event, 8)
+	watcher, err := NewFileWatcher([]string{alias}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Source != SourceHealth || event.Action != "watch_start_failed" || !strings.Contains(event.Detail, "symlink") {
+			t.Fatalf("symlink root did not report missing coverage: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("symlink root was silently marked watched")
+	}
+}
+
+func TestFileWatcherRootSlashContainsAbsolutePaths(t *testing.T) {
+	watcher := &FileWatcher{roots: []string{string(filepath.Separator)}}
+	if !watcher.isRelevant(filepath.Join(string(filepath.Separator), "tmp", "marker")) {
+		t.Fatal("watch_paths root / must include absolute descendants")
+	}
+}
+
+func TestFileWatcherRecoversMissingConfiguredDirectory(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "created-later")
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Resource == root {
+				goto rootObserved
+			}
+		case <-deadline:
+			t.Fatal("missing configured directory creation was not observed")
+		}
+	}
+
+rootObserved:
+	path := filepath.Join(root, "arbitrary-name.bin")
+	if err := os.WriteFile(path, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Resource == path {
+				return
+			}
+		case <-deadline:
+			t.Fatal("watcher did not recover coverage under newly created root")
+		}
+	}
+}
+
+func TestFileWatcherDirectFileSurvivesAtomicReplacement(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "watched.config")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{target}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, "replacement.tmp")
+	if err := os.WriteFile(tmp, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Resource == target {
+				if err := os.WriteFile(target, []byte("after replacement"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				secondDeadline := time.After(2 * time.Second)
+				for {
+					select {
+					case next := <-events:
+						if next.Source == SourceFile && next.Resource == target {
+							return
+						}
+					case <-secondDeadline:
+						t.Fatal("write after atomic replacement was not observed")
+					}
+				}
+			}
+		case <-deadline:
+			t.Fatal("atomic replacement was not observed through watched parent")
+		}
+	}
+}
+
+func TestFileWatcherRecoversWhenContainingDirectoryIsRecreated(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "watched-parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "target.bin")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 32)
+	watcher, err := NewFileWatcher([]string{target}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceHealth && event.Action == "watch_root_unavailable" {
+				goto parentWatchReinstalled
+			}
+		case <-deadline:
+			t.Fatal("watcher did not report/recover the recreated parent directory")
+		}
+	}
+
+parentWatchReinstalled:
+	if err := os.WriteFile(target, []byte("created after recovery"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.After(3 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Resource == target && (event.Action == "write" || event.Action == "create") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("watcher did not reinstall parent watch after containing directory recreation")
+		}
+	}
+}
+
+func TestExcludedFileDoesNotSkipSiblingDirectories(t *testing.T) {
+	root := t.TempDir()
+	excluded := filepath.Join(root, "ignore.txt")
+	if err := os.WriteFile(excluded, []byte("ignore"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(root, "keep")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, []string{excluded}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(child, "visible.bin")
+	if err := os.WriteFile(path, []byte("visible"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Resource == path {
+				return
+			}
+		case <-deadline:
+			t.Fatal("excluded file caused sibling directory coverage to be skipped")
+		}
 	}
 }
 
