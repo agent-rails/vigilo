@@ -57,4 +57,17 @@ export class SlackAlerter {
       text: `:white_check_mark: Vigilo scan${serverNote} — ${eventsAnalyzed} events, no threats detected`,
     });
   }
+
+  /**
+   * Reports a scan that did not complete. Never phrased as a result: the events
+   * were collected but not analysed, so the window is unassessed, not clean.
+   */
+  async postScanFailure(eventsAnalyzed: number, reason: string, servers: string[] = []): Promise<void> {
+    const serverNote = servers.length > 1 ? ` across ${servers.length} servers` : '';
+    await this.client.chat.postMessage({
+      channel: this.channel,
+      text: `:rotating_light: Vigilo scan${serverNote} INCOMPLETE — ${eventsAnalyzed} events collected; results may be partial (${reason}). ` +
+        `This window is unassessed; treat it as unchecked, not clear.`,
+    });
+  }
 }

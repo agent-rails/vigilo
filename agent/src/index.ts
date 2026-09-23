@@ -3,6 +3,7 @@ import cron from 'node-cron';
 import { VigiloMCPClient, VigiloEvent, parseTransports } from './collectors/mcp';
 import { analyzeEvents, signalDedupHash, Signal } from './agents/analyst';
 import { SlackAlerter } from './slack/alerter';
+import type { Logger } from 'pino';
 import pino from 'pino';
 
 const logger = pino({
@@ -30,6 +31,98 @@ function isDuplicate(signal: Signal): boolean {
   return false;
 }
 
+export interface ScanClient {
+  readonly serverLabel: string;
+  getAllEvents(since: Date, severity?: string, limit?: number): Promise<VigiloEvent[]>;
+}
+
+export interface ScanAlerter {
+  postSignal(signal: Signal, events: { resource: string; action: string; process?: string; server?: string }[]): Promise<string>;
+  postScanSummary(eventsAnalyzed: number, signalCount: number, servers?: string[]): Promise<void>;
+  postScanFailure(eventsAnalyzed: number, reason: string, servers?: string[]): Promise<void>;
+}
+
+export interface ScanDeps {
+  clients: ScanClient[];
+  alerter: ScanAlerter;
+  lookbackMins: number;
+  analyze?: (events: VigiloEvent[], servers: string[]) => Promise<Signal[]>;
+  log?: Logger;
+}
+
+export async function runScan(deps: ScanDeps): Promise<void> {
+  const { clients, alerter, lookbackMins, analyze = analyzeEvents, log = logger } = deps;
+  const servers = clients.map(c => c.serverLabel);
+  const since = new Date(Date.now() - lookbackMins * 60 * 1000);
+  log.info({ since, servers }, 'scan started');
+
+  // Fetch events from all daemons in parallel
+  const perServerEvents = await Promise.allSettled(
+    clients.map(c => c.getAllEvents(since, 'medium')),
+  );
+
+  const allEvents: VigiloEvent[] = [];
+  const fetchFailures: string[] = [];
+  for (let i = 0; i < clients.length; i++) {
+    const result = perServerEvents[i];
+    if (result.status === 'fulfilled') {
+      allEvents.push(...result.value);
+    } else {
+      log.error({ server: clients[i].serverLabel, err: result.reason }, 'failed to fetch events');
+      fetchFailures.push(clients[i].serverLabel);
+    }
+  }
+
+  log.info({ eventCount: allEvents.length }, 'events aggregated');
+
+  if (allEvents.length === 0) {
+    if (fetchFailures.length > 0) {
+      await alerter.postScanFailure(0, `could not fetch events from: ${fetchFailures.join(', ')}`, servers);
+      return;
+    }
+    await alerter.postScanSummary(0, 0, servers);
+    return;
+  }
+
+  let signals: Signal[];
+  try {
+    signals = await analyze(allEvents, servers);
+  } catch (err) {
+    // The scan did not complete. Say so — an empty signal list here would be
+    // posted as a clean bill of health for a window nothing ever read.
+    log.error({ err }, 'analysis failed');
+    await alerter.postScanFailure(allEvents.length, (err as Error)?.message ?? 'unknown error', servers);
+    return;
+  }
+
+  let posted = 0;
+  for (const signal of signals) {
+    if (isDuplicate(signal)) {
+      log.info({ category: signal.category, title: signal.title }, 'signal suppressed (dedup)');
+      continue;
+    }
+    const evidence = (signal.evidenceIndices ?? [])
+      .map(i => allEvents[i])
+      .filter(Boolean)
+      .map(e => ({ resource: e.resource, action: e.action, process: e.process, server: e.server }));
+
+    await alerter.postSignal(signal, evidence);
+    log.info({ signalId: signal.id, severity: signal.severity, title: signal.title }, 'signal posted');
+    posted++;
+  }
+
+  if (fetchFailures.length > 0) {
+    await alerter.postScanFailure(
+      allEvents.length,
+      `partial scan: could not fetch events from ${fetchFailures.join(', ')}`,
+      servers,
+    );
+    return;
+  }
+
+  await alerter.postScanSummary(allEvents.length, posted, servers);
+}
+
 async function main() {
   const slackToken   = requireEnv('SLACK_BOT_TOKEN');
   const alertChannel = requireEnv('VIGILO_ALERT_CHANNEL');
@@ -51,63 +144,16 @@ async function main() {
 
   const alerter = new SlackAlerter(slackToken, alertChannel);
 
-  const runScan = async () => {
-    const since = new Date(Date.now() - lookbackMins * 60 * 1000);
-    logger.info({ since, servers: clients.map(c => c.serverLabel) }, 'scan started');
+  const scan = () => runScan({ clients, alerter, lookbackMins });
 
-    // Fetch events from all daemons in parallel
-    const perServerEvents = await Promise.allSettled(
-      clients.map(c => c.getAllEvents(since, 'medium')),
-    );
-
-    const allEvents: VigiloEvent[] = [];
-    for (let i = 0; i < clients.length; i++) {
-      const result = perServerEvents[i];
-      if (result.status === 'fulfilled') {
-        allEvents.push(...result.value);
-      } else {
-        logger.error({ server: clients[i].serverLabel, err: result.reason }, 'failed to fetch events');
-      }
-    }
-
-    logger.info({ eventCount: allEvents.length }, 'events aggregated');
-
-    if (allEvents.length === 0) {
-      await alerter.postScanSummary(0, 0, clients.map(c => c.serverLabel));
-      return;
-    }
-
-    try {
-      const signals = await analyzeEvents(allEvents, clients.map(c => c.serverLabel));
-
-      let posted = 0;
-      for (const signal of signals) {
-        if (isDuplicate(signal)) {
-          logger.info({ category: signal.category, title: signal.title }, 'signal suppressed (dedup)');
-          continue;
-        }
-        const evidence = (signal.evidenceIndices ?? [])
-          .map(i => allEvents[i])
-          .filter(Boolean)
-          .map(e => ({ resource: e.resource, action: e.action, process: e.process, server: e.server }));
-
-        await alerter.postSignal(signal, evidence);
-        logger.info({ signalId: signal.id, severity: signal.severity, title: signal.title }, 'signal posted');
-        posted++;
-      }
-
-      await alerter.postScanSummary(allEvents.length, posted, clients.map(c => c.serverLabel));
-    } catch (err) {
-      logger.error({ err }, 'analysis failed');
-    }
-  };
-
-  await runScan();
-  cron.schedule(scanSchedule, () => { runScan(); });
+  await scan();
+  cron.schedule(scanSchedule, () => { scan(); });
   logger.info({ schedule: scanSchedule }, 'vigilo agent running');
 }
 
-main().catch(err => {
-  console.error('Fatal:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
+}
