@@ -7,9 +7,12 @@ omitted, same as V1/V3's own disclosed scope limits."""
 from __future__ import annotations
 
 import re
+import sqlite3
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 DAEMON_CONTAINER = "docker-daemon-1"
 
@@ -66,22 +69,67 @@ def _median(values: list[float]) -> float:
 
 
 def get_db_size_bytes(container: str, db_path: str = "/var/lib/vigilo/events.db") -> int:
-    """CORRECTED (live measurement): SQLite in WAL mode (confirmed live --
-    events.db-wal and events.db-shm both present) keeps the main .db file
-    at a near-fixed size and writes real data into the WAL file until a
-    checkpoint. Measuring only the main file reported zero growth across
-    15 real events. Sums all three files for the real on-disk footprint."""
-    total = 0
-    for suffix in ("", "-wal", "-shm"):
-        result = subprocess.run(
-            ["docker", "exec", container, "stat", "-c", "%s", db_path + suffix],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            total += int(result.stdout.strip())
-    return total
+    """Steady-state on-disk bytes for the event store, measured after a WAL
+    checkpoint.
+
+    Two earlier approaches were both wrong, in opposite directions. Measuring
+    only the main `.db` file reported zero growth across 15 real events,
+    because SQLite in WAL mode holds the main file near-fixed and writes into
+    the WAL until a checkpoint. Summing `.db` + `.db-wal` + `.db-shm` then
+    overcorrected: the WAL is write-ahead churn whose size tracks write
+    traffic and checkpoint timing, not retained data. Measured live at 40
+    events, the sum reported 22,758 B/event while the checkpointed store held
+    819 B/event -- a 28x overstatement.
+
+    The daemon image ships no `sqlite3` binary, so the three files are copied
+    out and checkpointed with `PRAGMA wal_checkpoint(TRUNCATE)` against the
+    copy. The live daemon is never written to and never paused. Copying a
+    database that is being written concurrently can capture a torn WAL tail;
+    the checkpoint then recovers the last consistent commit, so the result can
+    undercount by at most the events written during the copy itself.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        local = Path(tmp) / "events.db"
+        for suffix in ("", "-wal", "-shm"):
+            subprocess.run(
+                ["docker", "cp", f"{container}:{db_path + suffix}", str(local) + suffix],
+                capture_output=True,
+                timeout=30,
+            )
+        if not local.exists():
+            raise RuntimeError(f"could not copy {db_path} out of {container}")
+        connection = sqlite3.connect(local)
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            connection.close()
+        return local.stat().st_size
+
+
+def get_event_count(container: str, db_path: str = "/var/lib/vigilo/events.db") -> int:
+    """Rows in the events table, read from a checkpointed copy.
+
+    Counting rows directly is the honest denominator for bytes-per-event. The
+    alternative -- trusting the number of triggers the harness fired -- misses
+    events the daemon generated on its own and events a suppression rule
+    dropped.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        local = Path(tmp) / "events.db"
+        for suffix in ("", "-wal", "-shm"):
+            subprocess.run(
+                ["docker", "cp", f"{container}:{db_path + suffix}", str(local) + suffix],
+                capture_output=True,
+                timeout=30,
+            )
+        if not local.exists():
+            raise RuntimeError(f"could not copy {db_path} out of {container}")
+        connection = sqlite3.connect(local)
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            return int(connection.execute("SELECT count(*) FROM events").fetchone()[0])
+        finally:
+            connection.close()
 
 
 def compute_overhead_report(
