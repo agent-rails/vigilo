@@ -145,7 +145,8 @@ func (d *Dispatcher) Fire(e collector.Event) {
 	d.dedupMu.Lock()
 	if expiry, seen := d.dedupCache[fp]; seen && time.Now().Before(expiry) {
 		d.dedupMu.Unlock()
-		slog.Debug("alert suppressed by daemon dedup", "resource", e.Resource, "source", e.Source)
+		slog.Debug("alert suppressed by daemon dedup",
+			"resource", e.Resource, "action", e.Action, "source", e.Source)
 		return
 	}
 	d.dedupCache[fp] = time.Now().Add(d.cfg.Cooldown)
@@ -204,13 +205,48 @@ func (d *Dispatcher) pruneDedupLoop() {
 	}
 }
 
-// eventFingerprint produces a stable hash for daemon-side dedup.
-// Uses source + resource only — action is intentionally excluded so that
-// create vs write to the same file are treated as the same signal within
-// the cooldown window (prevents alert floods for repeated access patterns).
+// Actions emitted by the file collector for a watched path that is no longer
+// there. They are string literals in collector/file.go rather than constants;
+// mirrored here so the classification below has one place to correct.
+const (
+	actionRemove = "remove"
+	actionRename = "rename"
+)
+
+const (
+	classMutate   = "mutate"
+	classTerminal = "terminal"
+)
+
+// fingerprintClass groups actions that genuinely are one signal for dedup.
+//
+// CORRECTED (#31): the fingerprint excluded the action entirely, which was
+// right while the only file actions were create and write -- a key written
+// twice in an hour is one signal, and collapsing them is what keeps a busy
+// path from flooding the push tier. It stopped being right when remove and
+// rename arrived: those say the key left, not that it changed, and folding
+// them into the same fingerprint as a write meant the shipped
+// signal_cooldown: 1h suppressed the departure whenever the path had been
+// written in the preceding hour. On a signing host that write is routine, so
+// the move-out was the case that reliably went unsent.
+//
+// Classes rather than the raw action, in both directions on purpose: create
+// and write stay collapsed, and remove and rename collapse into each other
+// because both mean the same thing about the same path.
+func fingerprintClass(action string) string {
+	switch action {
+	case actionRemove, actionRename:
+		return classTerminal
+	default:
+		return classMutate
+	}
+}
+
+// eventFingerprint produces a stable hash for daemon-side dedup: the source,
+// the action class (see fingerprintClass) and the resource.
 func eventFingerprint(e collector.Event) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s:%s", e.Source, e.Resource)
+	fmt.Fprintf(h, "%s:%s:%s", e.Source, fingerprintClass(e.Action), e.Resource)
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
