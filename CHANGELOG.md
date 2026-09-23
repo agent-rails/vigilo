@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.1
+
+### Changes
+
+- Watch nested directory trees created after startup, and emit remove/rename events for watched paths.
+- Keep terminal file events (`remove`/`rename`) from being suppressed by a prior write; shorten dedup suppression after total alert-delivery failure to a 30-second backoff.
+- Report malformed analyst output and failed event retrieval as incomplete scans, not clean scans; preserve evidence indices through event compaction.
+- Re-run the immediate-tier evaluation on the release candidate. Results and scope limits are recorded in `docs/reports/v0.2.1-evaluation.md`.
+
+### Limits
+
+Filesystem reads remain invisible to the default collector. Recursive directory walks are synchronous and can delay event handling; the daemon cannot reconstruct events lost to inotify queue overflow. File events do not identify the process, and rename events are not correlated with creates. The analyst tier remains unevaluated for detection quality and prompt-injection resistance. The local Docker evaluation is development evidence, not production-validator evidence.
+
 ## v0.2.0
 
 ### Upgrade notes
