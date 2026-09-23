@@ -37,6 +37,7 @@ archives:
       - config.example.yaml
       - README.md
       - SECURITY.md
+      - CHANGELOG.md
       - deploy/vigilo.service
       - deploy/install.sh
 
@@ -57,24 +58,31 @@ changelog:
 
 release:
   github:
-    owner: voltagebots
+    owner: agent-rails
     name: vigilo
-  draft: false
+  # The release workflow publishes only after the archive installation smoke test.
+  draft: true
   prerelease: auto
   name_template: "v{{ .Version }}"
   header: |
     ## Vigilo {{ .Version }}
 
-    OS-level security daemon for crypto infrastructure — monitors file access,
-    process spawns, and network connections in real time.
+    OS-level observation and alerting for crypto infrastructure: filesystem
+    create/write events, sampled process and network activity, and optional
+    supply-chain checks. See CHANGELOG.md for v0.2.0 changes and upgrade notes.
 
     ### Quick start
 
     ```bash
     tar xzf vigilo_{{ .Version }}_linux_amd64.tar.gz
-    sudo ./install.sh
+    sudo bash deploy/install.sh
     ```
 
-    See [README](https://github.com/voltagebots/vigilo#readme) and
-    [SECURITY.md](https://github.com/voltagebots/vigilo/blob/main/SECURITY.md)
+    Choose the archive matching your operating system and CPU. The installer
+    is for Linux with systemd; macOS users run the bundled binary directly.
+    Existing config is preserved. Configure watch paths and alert delivery
+    before starting the service. HTTP MCP now requires a bearer token by default.
+
+    See [README](https://github.com/agent-rails/vigilo#readme) and
+    [SECURITY.md](https://github.com/agent-rails/vigilo/blob/main/SECURITY.md)
     for full setup instructions.

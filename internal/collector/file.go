@@ -42,7 +42,7 @@ func severityForPath(path string) Severity {
 	return SeverityInfo
 }
 
-// FileWatcher uses fsnotify to emit Events when sensitive files are accessed.
+// FileWatcher uses fsnotify to emit create/write events, classified by path.
 type FileWatcher struct {
 	paths    []string
 	exclude  []string
@@ -132,7 +132,7 @@ func (fw *FileWatcher) loop() {
 			if !ok {
 				return
 			}
-			// Only care about reads and writes to sensitive files
+			// fsnotify reports create/write changes here, not file reads.
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 				sev := severityForPath(event.Name)
 				action := "write"
