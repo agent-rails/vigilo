@@ -2,7 +2,9 @@ import Anthropic, { APIError } from '@anthropic-ai/sdk';
 import { createHash } from 'crypto';
 import { VigiloEvent } from '../collectors/mcp';
 
-const client = new Anthropic();
+// Constructed on first use: importing the module must not require credentials.
+let client: Anthropic | undefined;
+const anthropic = (): Anthropic => (client ??= new Anthropic());
 
 export type Severity = 'low' | 'medium' | 'high' | 'critical';
 
@@ -16,6 +18,18 @@ export interface Signal {
   evidenceIndices: number[];
   detectedAt: Date;
   server?: string;
+}
+
+/**
+ * The analyst produced a response its own output contract could not read.
+ * Distinct from "analysed successfully, found nothing" — callers must not
+ * render this as a clean scan.
+ */
+export class AnalysisParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnalysisParseError';
+  }
 }
 
 const SYSTEM = `You are a principal security analyst specializing in crypto infrastructure threat detection.
@@ -72,13 +86,14 @@ export function signalDedupHash(category: string, title: string, server?: string
 const MAX_EVENTS = 150;
 const SAMPLE_LOW_PRIORITY_EVERY = 3;
 
-function compactEvents(events: VigiloEvent[]): { compacted: VigiloEvent[]; note: string } {
+function compactEvents(events: VigiloEvent[]): { compacted: { event: VigiloEvent; index: number }[]; note: string } {
   if (events.length <= MAX_EVENTS) {
-    return { compacted: events, note: '' };
+    return { compacted: events.map((event, index) => ({ event, index })), note: '' };
   }
 
-  const high    = events.filter(e => e.severity === 'critical' || e.severity === 'high');
-  const low     = events.filter(e => e.severity === 'medium'   || e.severity === 'info');
+  const indexed = events.map((event, index) => ({ event, index }));
+  const high    = indexed.filter(({ event }) => event.severity === 'critical' || event.severity === 'high');
+  const low     = indexed.filter(({ event }) => event.severity === 'medium'   || event.severity === 'info');
   const sampled = low.filter((_, i) => i % SAMPLE_LOW_PRIORITY_EVERY === 0);
   const compacted = [...high, ...sampled].slice(0, MAX_EVENTS);
 
@@ -105,23 +120,77 @@ function buildMoim(events: VigiloEvent[], servers: string[]): string {
   ].join('  ');
 }
 
-// ── Backward scan helpers (from Anthropic defending-code reference harness) ───
+// ── Response extraction helpers ───────────────────────────────────────────────
 //
-// Agents often emit structured content mid-response with trailing prose.
-// Naive last-message or greedy-regex extraction returns the prose or a
-// malformed superset. Scanning from the end finds the last complete block.
+// Agents emit structured content mid-response with prose on either side, and
+// that prose can quote attacker-chosen strings. Extraction must therefore be
+// driven by a real parser, never by counting delimiters.
+
+// Bounds the work spent on bracket runs that never close. Response bodies are
+// capped at max_tokens, but the bracket density inside them is attacker-chosen
+// (a filename may contain any byte but '/' and NUL), so the scan is not allowed
+// to be quadratic in that count.
+const MAX_ARRAY_CANDIDATES = 64;
+
+function parseArray(text: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Index of the ']' closing the '[' at `start`, or -1. Tracks quote state and
+// backslash escapes, so a bracket inside a string literal cannot change depth.
+function matchArrayEnd(text: string, start: number): number {
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if      (escaped)     escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"')  inString = false;
+      continue;
+    }
+    if      (ch === '"') inString = true;
+    else if (ch === '[') depth++;
+    else if (ch === ']' && --depth === 0) return i;
+  }
+  return -1;
+}
 
 // Finds the last complete [...] array in text.
-// Greedy /\[[\s\S]*\]/ matches first '[' to last ']' — breaks when Claude
-// emits prose after the array. Backward scan is precise.
-function findLastJsonArray(text: string): string | null {
-  let depth = 0, end = -1;
-  for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i];
-    if      (ch === ']') { if (end === -1) end = i; depth++; }
-    else if (ch === '[') { if (--depth === 0) return text.slice(i, end + 1); }
+//
+// Agents often emit structured content mid-response with trailing prose, so the
+// last *complete* array is the one we want — a greedy /\[[\s\S]*\]/ matches the
+// first '[' to the last ']' and returns a malformed superset.
+//
+// Each candidate is validated by JSON.parse rather than by bracket counting:
+// an unbalanced bracket in prose is skipped, and one inside a quoted value is
+// invisible to the depth counter. Nested arrays are stepped over, so an
+// evidenceIndices list is never mistaken for the signal array.
+export function findLastJsonArray(text: string): unknown[] | null {
+  const whole = parseArray(text.trim());
+  if (whole) return whole;
+
+  let found: unknown[] | null = null;
+  let attempts = 0;
+  let i = text.indexOf('[');
+
+  while (i !== -1 && attempts < MAX_ARRAY_CANDIDATES) {
+    const end = matchArrayEnd(text, i);
+    const parsed = end === -1 ? null : parseArray(text.slice(i, end + 1));
+    if (parsed) {
+      found = parsed;
+      i = text.indexOf('[', end + 1);
+    } else {
+      attempts++;
+      i = text.indexOf('[', i + 1);
+    }
   }
-  return null;
+
+  return found;
 }
 
 // Finds the last <tag>…</tag> block via backward scan.
@@ -134,15 +203,10 @@ function findTaggedContent(text: string, tag: string): string | null {
   return text.slice(oi + open.length, ci);
 }
 
-function parseSignals(raw: string): Omit<Signal, 'id' | 'detectedAt'>[] | null {
-  try {
-    const arr = findLastJsonArray(raw);
-    if (!arr) return null;
-    const parsed = JSON.parse(arr);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+type RawSignal = Omit<Signal, 'id' | 'detectedAt'>;
+
+function parseSignals(raw: string): RawSignal[] | null {
+  return findLastJsonArray(raw) as RawSignal[] | null;
 }
 
 // ── Exponential backoff on transient API errors ───────────────────────────────
@@ -155,12 +219,14 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_ATTEMPTS = 6;
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
+export type ModelCall = (messages: Anthropic.MessageParam[]) => Promise<string>;
+
 async function callClaude(messages: Anthropic.MessageParam[]): Promise<string> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) await sleep(Math.min(2 ** attempt * 1_000, 30_000));
     try {
-      const msg = await client.messages.create({
+      const msg = await anthropic().messages.create({
         model: 'claude-opus-4-7',
         max_tokens: 4096,
         system: SYSTEM,
@@ -181,12 +247,15 @@ async function callClaude(messages: Anthropic.MessageParam[]): Promise<string> {
 export async function analyzeEvents(
   events: VigiloEvent[],
   servers: string[] = [],
+  call: ModelCall = callClaude,
 ): Promise<Signal[]> {
   if (events.length === 0) return [];
 
   const { compacted, note } = compactEvents(events);
-  const moim = buildMoim(compacted, servers);
-  const indexed = compacted.map((e, i) => ({ index: i, ...e }));
+  const moim = buildMoim(compacted.map(({ event }) => event), servers);
+  // Preserve the original event index: the caller resolves evidence against
+  // the full event list, while compaction reorders and drops entries.
+  const indexed = compacted.map(({ event, index }) => ({ index, ...event }));
 
   const userContent = [
     moim,
@@ -198,13 +267,13 @@ export async function analyzeEvents(
     { role: 'user', content: userContent },
   ];
 
-  let raw = await callClaude(baseMessages);
+  let raw = await call(baseMessages);
 
   // ── Forced dedup reasoning gate ───────────────────────────────────────────
   // If <dup_check> is absent, Claude skipped its dedup reasoning pass.
   // Correct with a single follow-up turn (conversation context preserved).
   if (!findTaggedContent(raw, 'dup_check')) {
-    raw = await callClaude([
+    raw = await call([
       ...baseMessages,
       { role: 'assistant', content: raw },
       {
@@ -219,7 +288,7 @@ export async function analyzeEvents(
 
   // ── Inspector: single retry on malformed JSON ─────────────────────────────
   if (parsed === null) {
-    raw = await callClaude([
+    raw = await call([
       ...baseMessages,
       { role: 'assistant', content: raw },
       {
@@ -231,7 +300,12 @@ export async function analyzeEvents(
     parsed = parseSignals(raw);
   }
 
-  if (!parsed) return [];
+  // A response we could not read is not a clean scan. Raising here keeps that
+  // fact from collapsing into an empty signal list, which callers render as
+  // "analysed, nothing found".
+  if (!parsed) {
+    throw new AnalysisParseError('analyst response contained no parseable JSON array (retried once)');
+  }
 
   return parsed.map(s => ({
     ...s,
