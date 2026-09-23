@@ -7,6 +7,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -47,6 +49,16 @@ func TestMain(m *testing.M) {
 type instance struct {
 	webAddr string
 	mcpAddr string
+
+	cmd    *exec.Cmd
+	stderr *safeBuffer
+
+	// exited closes once the daemon process has been reaped. waitErr is only
+	// valid after a receive on it. Tests that assert the daemon is still running
+	// need this: a process that has exited but not been waited on is a zombie
+	// that still answers signal 0.
+	exited  chan struct{}
+	waitErr error
 }
 
 type daemonOpts struct {
@@ -58,6 +70,27 @@ type daemonOpts struct {
 	webhookURL   string // if set, configures immediate alerter webhook
 	minSeverity  string // alerter min_severity (default: critical when empty)
 	cooldown     string // signal_cooldown duration string (default: 1s)
+	mcpTransport string // "http" (default) or "stdio"
+	holdStdin    bool   // keep stdin open; otherwise it is /dev/null, as under systemd
+}
+
+// safeBuffer collects daemon stderr. os/exec writes it from a copier goroutine
+// while the test reads it, so the mutex is required under -race.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 type suppressRule struct {
@@ -89,17 +122,34 @@ func startDaemon(t *testing.T, opts daemonOpts) *instance {
 
 	cmd := exec.Command(daemonBin, "-config", cfgPath, "-db", dbPath) //nolint:gosec
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	stderr := &safeBuffer{}
+	cmd.Stderr = stderr
+	// A nil Stdin is /dev/null — every read returns EOF immediately, which is
+	// exactly what systemd's default StandardInput=null hands the process.
+	if opts.holdStdin {
+		if _, err := cmd.StdinPipe(); err != nil {
+			t.Fatalf("stdin pipe: %v", err)
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)
 	}
+
+	d := &instance{
+		webAddr: webAddr, mcpAddr: mcpAddr,
+		cmd: cmd, stderr: stderr, exited: make(chan struct{}),
+	}
+	go func() {
+		d.waitErr = cmd.Wait()
+		close(d.exited)
+	}()
 	t.Cleanup(func() {
 		cmd.Process.Kill() //nolint:errcheck
-		cmd.Wait()         //nolint:errcheck
+		<-d.exited
 	})
 
-	waitReady(t, webAddr)
-	return &instance{webAddr: webAddr, mcpAddr: mcpAddr}
+	waitReady(t, webAddr, d)
+	return d
 }
 
 func buildConfig(opts daemonOpts, mcpAddr, webAddr string) string {
@@ -131,16 +181,20 @@ func buildConfig(opts daemonOpts, mcpAddr, webAddr string) string {
 		minSev = "critical"
 	}
 
+	transport := opts.mcpTransport
+	if transport == "" {
+		transport = "http"
+	}
+
 	fmt.Fprintf(&sb, `
 poll_interval: 1s
 buffer_retention_hours: 1
-mcp_transport: http
-mcp_addr: %s
+mcp_transport: %s
 web_addr: %s
 signal_cooldown: %s
 alerter:
   min_severity: %s
-`, mcpAddr, webAddr, cooldown, minSev)
+`, transport, webAddr, cooldown, minSev)
 
 	if opts.webhookURL != "" {
 		fmt.Fprintf(&sb, "  webhooks:\n    - name: test\n      url: %s\n", opts.webhookURL)
@@ -148,21 +202,33 @@ alerter:
 	if opts.webToken != "" {
 		fmt.Fprintf(&sb, "web_token: %q\n", opts.webToken)
 	}
-	if opts.mcpToken != "" {
-		fmt.Fprintf(&sb, "mcp_token: %q\n", opts.mcpToken)
-	} else {
-		// The harness runs every daemon on mcp_transport: http, and the daemon
-		// refuses to start unauthenticated without this opt-out.
-		sb.WriteString("mcp_allow_unauthenticated: true\n")
+	if transport == "http" {
+		fmt.Fprintf(&sb, "mcp_addr: %s\n", mcpAddr)
+		if opts.mcpToken != "" {
+			fmt.Fprintf(&sb, "mcp_token: %q\n", opts.mcpToken)
+		} else {
+			// The daemon refuses to serve http unauthenticated without this opt-out.
+			sb.WriteString("mcp_allow_unauthenticated: true\n")
+		}
 	}
 	return sb.String()
 }
 
-func waitReady(t *testing.T, webAddr string) {
+// waitReady blocks until the daemon answers /healthz. d may be nil; when it is
+// not, a daemon that dies during startup fails the test straight away, with its
+// stderr, rather than after the full deadline with no explanation.
+func waitReady(t *testing.T, webAddr string, d *instance) {
 	t.Helper()
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
+		if d != nil {
+			select {
+			case <-d.exited:
+				t.Fatalf("daemon exited before becoming ready: %v\nstderr:\n%s", d.waitErr, d.stderr.String())
+			default:
+			}
+		}
 		resp, err := client.Get("http://" + webAddr + "/healthz")
 		if err == nil && resp.StatusCode == 200 {
 			resp.Body.Close()

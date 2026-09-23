@@ -232,6 +232,19 @@ func main() {
 		"signal_cooldown", cfg.SignalCooldown,
 	)
 
+	// The MCP transport is the analyst tier's query surface, not the daemon's
+	// main loop. Collection and immediate alerting are the tier that has to work
+	// during a compromise, and they must outlive the transport: a peer hanging up
+	// is not a reason to stop watching a keystore. So both transports run
+	// supervised and ctx — cancelled only by SIGINT/SIGTERM — is the one gate
+	// that ends the process.
+	//
+	// The stdio transport reaches EOF at once under any service manager, because
+	// systemd's StandardInput= defaults to null. Serving it inline used to end the
+	// daemon there: exit 0, Restart=always, a 5s loop whose pollers never reached
+	// a first tick. Losing the transport now degrades the analyst tier only, and
+	// says so — in the journal and on mcp_transport_up.
+	mcpDone := make(chan struct{})
 	switch cfg.MCPTransport {
 	case "http":
 		addr := cfg.MCPAddr
@@ -252,23 +265,40 @@ func main() {
 				"addr", addr)
 		}
 		slog.Info("MCP server listening", "addr", addr)
-		mcpDone := make(chan struct{})
+		web.SetMCPTransportUp(true)
 		go func() {
 			defer close(mcpDone)
-			if err := mcpServer.ServeSSE(ctx, addr, vigilomcp.AuthConfig{Token: cfg.MCPToken}); err != nil {
-				slog.Error("MCP HTTP server error", "err", err)
-				cancel()
+			err := mcpServer.ServeSSE(ctx, addr, vigilomcp.AuthConfig{Token: cfg.MCPToken})
+			web.SetMCPTransportUp(false)
+			if ctx.Err() != nil {
+				return // shutting down; ServeSSE returning is expected
 			}
+			slog.Error("MCP HTTP transport stopped — the analyst tier can no longer reach this daemon. "+
+				"Collection and immediate alerting continue",
+				"addr", addr, "err", err)
 		}()
-		<-ctx.Done()
-		// Wait for the listener to drain before the store closes underneath it.
-		<-mcpDone
 	default: // "stdio"
-		if err := mcpServer.ServeStdio(ctx); err != nil {
-			slog.Error("MCP stdio server error", "err", err)
-			os.Exit(1)
-		}
+		web.SetMCPTransportUp(true)
+		go func() {
+			defer close(mcpDone)
+			err := mcpServer.ServeStdio(ctx)
+			web.SetMCPTransportUp(false)
+			if ctx.Err() != nil {
+				return // shutting down; ServeStdio returning is expected
+			}
+			if err != nil {
+				slog.Error("MCP stdio transport failed; collection and immediate alerting continue", "err", err)
+				return
+			}
+			slog.Warn("MCP stdio transport closed on stdin EOF — the analyst tier can no longer reach this daemon. " +
+				"Collection and immediate alerting continue. Under a service manager stdin is /dev/null and reads EOF " +
+				"immediately: set mcp_transport: http with mcp_token to serve the analyst tier there")
+		}()
 	}
+
+	<-ctx.Done()
+	// Wait for the transport to drain before the store closes underneath it.
+	<-mcpDone
 
 	// Graceful shutdown: stop producers, close events channel, wait for
 	// drain, close store. Order matters — see stopCollectors above.

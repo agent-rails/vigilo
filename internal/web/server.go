@@ -29,7 +29,24 @@ var (
 	metricAlertsSent    = expvar.NewInt("vigilo_alerts_sent")
 	metricAlertsDropped = expvar.NewInt("vigilo_alerts_dropped")
 	metricWebRequests   = expvar.NewInt("vigilo_web_requests_total")
+
+	// 1 while the MCP transport is serving, 0 once it has stopped. The daemon
+	// keeps collecting and alerting either way, so without a gauge the loss of
+	// the analyst tier is a single log line that scrolls away — silent
+	// non-coverage, which is the characteristic failure of this class of tool.
+	metricMCPTransportUp = expvar.NewInt("vigilo_mcp_transport_up")
 )
+
+// SetMCPTransportUp records whether the MCP query transport is serving.
+// Process-wide rather than a method on Server, because the daemon must be able
+// to report it whether or not the optional dashboard is enabled.
+func SetMCPTransportUp(up bool) {
+	var v int64
+	if up {
+		v = 1
+	}
+	metricMCPTransportUp.Set(v)
+}
 
 // Config holds web server configuration.
 type Config struct {
@@ -192,7 +209,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	uptime := int64(time.Since(s.startTime).Seconds())
 	count, _ := s.store.CountSince(time.Now().Add(-24 * time.Hour))
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","uptime_seconds":%d,"events_buffered":%d}`, uptime, count)
+	fmt.Fprintf(w, `{"status":"ok","uptime_seconds":%d,"events_buffered":%d,"mcp_transport_up":%t}`,
+		uptime, count, metricMCPTransportUp.Value() == 1)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {

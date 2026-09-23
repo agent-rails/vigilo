@@ -21,7 +21,17 @@ poll_interval: 5s
 # Keep events in SQLite for this many hours (auto-purge after)
 buffer_retention_hours: 24
 
-# MCP server transport: "stdio" (default) or "http"
+# MCP server transport: "stdio" (default) or "http".
+#
+# stdio suits a client that launches vigilo as a child process and owns its
+# stdin (Claude Desktop, an MCP CLI). It does NOT suit a service: systemd's
+# StandardInput= defaults to null, so stdin reads EOF at once and the analyst
+# tier is unreachable for the life of the process. The daemon keeps collecting
+# and alerting — that path never depended on a model being reachable — and logs
+# a WARN naming the cause; /healthz and /metrics report mcp_transport_up=0.
+#
+# For the systemd install (deploy/vigilo.service), use http with a token so the
+# analyst tier can actually reach this host.
 mcp_transport: stdio
 
 # Only used when mcp_transport = "http"

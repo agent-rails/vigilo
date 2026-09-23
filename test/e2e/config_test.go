@@ -54,7 +54,7 @@ alerter:
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() }) //nolint:errcheck
 
-	waitReady(t, webAddr)
+	waitReady(t, webAddr, nil)
 
 	// cfgToken must be rejected
 	resp, err := http.Get("http://" + webAddr + "/api/events?token=" + cfgToken)
@@ -141,7 +141,7 @@ alerter:
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() }) //nolint:errcheck
 
-	waitReady(t, webAddr)
+	waitReady(t, webAddr, nil)
 
 	// Daemon is up — healthz must respond
 	resp, err := http.Get("http://" + webAddr + "/healthz")
