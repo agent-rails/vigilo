@@ -139,11 +139,26 @@ func TestAuditdClassifiesOpenWriteFlags(t *testing.T) {
 	g := auditGroupFromLines(t,
 		`type=SYSCALL msg=audit(1700000000.123:50): arch=c000003e syscall=257 a0=ffffffffffffff9c a2=241 success=yes exit=3 ppid=50 pid=51 auid=1000 uid=1000 comm="writer" exe="/usr/bin/writer" key="vigilo_project"`,
 		`type=CWD msg=audit(1700000000.123:50): cwd="/tmp"`,
-		`type=PATH msg=audit(1700000000.123:50): item=0 name="payload.bin" inode=11 dev=00:00 mode=0100644 nametype=CREATE`,
+		`type=PATH msg=audit(1700000000.123:50): item=0 name="payload.bin" inode=11 dev=00:00 mode=0100644 nametype=NORMAL`,
 	)
 	events := eventsForAuditGroup(g)
 	if len(events) != 1 || events[0].Action != "write" || !strings.Contains(events[0].Detail, "access=write") {
 		t.Fatalf("write-intent open was not classified: %+v", events)
+	}
+}
+
+func TestAuditdDistinguishesCreatedPathFromWriteIntent(t *testing.T) {
+	g := auditGroupFromLines(t,
+		`type=SYSCALL msg=audit(1700000000.123:53): arch=c000003e syscall=257 a0=ffffffffffffff9c a2=241 success=yes exit=3 ppid=50 pid=51 auid=1000 uid=1000 comm="writer" exe="/usr/bin/writer" key="vigilo_project"`,
+		`type=CWD msg=audit(1700000000.123:53): cwd="/tmp"`,
+		`type=PATH msg=audit(1700000000.123:53): item=0 name="new-payload.bin" inode=12 dev=00:00 mode=0100644 nametype=CREATE`,
+	)
+	events := eventsForAuditGroup(g)
+	if len(events) != 1 || events[0].Action != "create" || events[0].Resource != "/tmp/new-payload.bin" {
+		t.Fatalf("audit CREATE path was not distinguished from a write: %+v", events)
+	}
+	if !strings.Contains(events[0].Detail, "access=write") {
+		t.Fatalf("create event lost the observed write intent: %+v", events[0])
 	}
 }
 

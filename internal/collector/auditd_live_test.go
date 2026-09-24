@@ -58,8 +58,18 @@ func TestAuditdLiveFileAndExecAttribution(t *testing.T) {
 	t.Cleanup(watcher.Stop)
 
 	filePath := filepath.Join(root, "arbitrary-assessment-payload.bin")
-	if err := os.WriteFile(filePath, []byte("vigilo live audit test\n"), 0600); err != nil {
-		t.Fatalf("write watched file: %v", err)
+	renamedPath := filepath.Join(root, "renamed-arbitrary-payload.bin")
+	if err := os.WriteFile(filePath, []byte("initial contents\n"), 0600); err != nil {
+		t.Fatalf("create watched file: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("overwritten contents\n"), 0600); err != nil {
+		t.Fatalf("overwrite watched file: %v", err)
+	}
+	if err := os.Rename(filePath, renamedPath); err != nil {
+		t.Fatalf("rename watched file: %v", err)
+	}
+	if err := os.Remove(renamedPath); err != nil {
+		t.Fatalf("delete watched file: %v", err)
 	}
 	child := exec.Command("/bin/true")
 	if err := child.Run(); err != nil {
@@ -68,15 +78,21 @@ func TestAuditdLiveFileAndExecAttribution(t *testing.T) {
 	childPID := child.ProcessState.Pid()
 
 	deadline := time.After(10 * time.Second)
-	gotFile, gotExec := false, false
-	for !(gotFile && gotExec) {
+	required := map[string]map[string]bool{
+		filePath:    {"create": false, "write": false, "rename": false},
+		renamedPath: {"rename": false, "delete": false},
+	}
+	gotExec := false
+	for !allAuditActionsSeen(required) || !gotExec {
 		select {
 		case event := <-events:
-			if event.Resource == filePath && event.Source == SourceFile {
+			if actions, relevant := required[event.Resource]; relevant && event.Source == SourceFile {
 				if event.PID != os.Getpid() || event.Executable == "" || event.User == "" {
 					t.Fatalf("live file event lacks correct actor identity: %+v", event)
 				}
-				gotFile = true
+				if _, expected := actions[event.Action]; expected {
+					actions[event.Action] = true
+				}
 			}
 			if event.Source == SourceProcess && event.Action == "exec" && event.PID == childPID {
 				if !strings.Contains(event.Executable, "true") || event.User == "" {
@@ -85,9 +101,20 @@ func TestAuditdLiveFileAndExecAttribution(t *testing.T) {
 				gotExec = true
 			}
 		case <-deadline:
-			t.Fatalf("timed out waiting for audit events (file=%v exec=%v); check audit rules and %s", gotFile, gotExec, logPath)
+			t.Fatalf("timed out waiting for audit events (actions=%v exec=%v); check audit rules and %s", required, gotExec, logPath)
 		}
 	}
+}
+
+func allAuditActionsSeen(required map[string]map[string]bool) bool {
+	for _, actions := range required {
+		for _, seen := range actions {
+			if !seen {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func addAuditRule(args ...string) error {
