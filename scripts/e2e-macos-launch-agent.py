@@ -69,6 +69,7 @@ poll_interval: 200ms
 process_monitor:
   enabled: true
   report_new_processes: true
+signal_cooldown: 0s
 alerter:
   min_severity: high
   min_severity_by_source:
@@ -95,27 +96,58 @@ alerter:
 		time.sleep(0.5)
 
 		file_path = watch_dir / "arbitrary-assessment-payload.bin"
+		renamed_path = watch_dir / "renamed-assessment-payload.bin"
+		nested_file = watch_dir / "created-after-start" / "deep" / "nested-payload.bin"
+		seen_file_events = set()
+		slack_alerts = [0]
+		deadline = time.monotonic() + 20
+
+		def next_payload() -> dict:
+			while time.monotonic() < deadline:
+				try:
+					payload = Sink.received.get(timeout=min(0.25, max(0.01, deadline - time.monotonic())))
+				except queue.Empty:
+					continue
+				if isinstance(payload.get("blocks"), list):
+					slack_alerts[0] += 1
+					continue
+				return payload
+			raise AssertionError(f"timed out waiting for E2E webhook; file events seen={sorted(seen_file_events)}")
+
+		def wait_for_file_event(actions: set[str], path: pathlib.Path) -> str:
+			while True:
+				payload = next_payload()
+				if payload.get("source") != "file_access":
+					continue
+				observed = (payload.get("action"), payload.get("resource"))
+				seen_file_events.add(observed)
+				if observed[0] in actions and observed[1] == str(path):
+					return observed[0]
+
 		file_path.write_bytes(b"created by LaunchAgent E2E\n")
+		wait_for_file_event({"create"}, file_path)
+		file_path.write_bytes(b"overwritten by LaunchAgent E2E, second write\n")
+		wait_for_file_event({"write"}, file_path)
+		file_path.rename(renamed_path)
+		wait_for_file_event({"rename", "remove"}, file_path)
+		renamed_path.unlink()
+		wait_for_file_event({"remove"}, renamed_path)
+		nested_file.parent.mkdir(parents=True)
+		# Give the recursive watcher time to register the new tree. A file written
+		# before registration finishes can be missed (documented coverage limit).
+		time.sleep(0.3)
+		nested_file.write_bytes(b"created in a nested directory after startup\n")
+		wait_for_file_event({"create"}, nested_file)
 		child = subprocess.Popen(["/bin/sleep", "12"])
-		got_file = got_process = False
-		slack_alerts = 0
-		deadline = time.monotonic() + 10
-		while time.monotonic() < deadline and not (got_file and got_process and slack_alerts >= 2):
-			try:
-				payload = Sink.received.get(timeout=0.25)
-			except queue.Empty:
-				continue
-			if payload.get("source") == "file_access" and payload.get("resource") == str(file_path):
-				got_file = True
+		while True:
+			payload = next_payload()
 			if payload.get("source") == "process" and payload.get("pid") == child.pid:
 				if not payload.get("executable") or not payload.get("user_id"):
 					raise AssertionError(f"process alert omitted identity context: {payload}")
-				got_process = True
-			if isinstance(payload.get("blocks"), list):
-				slack_alerts += 1
-		if not got_file or not got_process or slack_alerts < 2:
-			raise AssertionError(f"missing LaunchAgent alerts: file={got_file}, process={got_process}, slack={slack_alerts}; log={log_file.read_text(errors='replace')}")
-		print("PASS: LaunchAgent startup, file/process webhooks, and environment-backed Slack delivery")
+				break
+		if slack_alerts[0] < 2:
+			raise AssertionError(f"missing environment-backed Slack alerts: {slack_alerts[0]}; log={log_file.read_text(errors='replace')}")
+		print("PASS: LaunchAgent startup, file create/write/rename/delete, nested-tree coverage, process webhook, and Slack delivery")
 		child.terminate()
 		child.wait(timeout=5)
 		return 0
