@@ -69,6 +69,7 @@ poll_interval: 200ms
 process_monitor:
   enabled: true
   report_new_processes: true
+signal_cooldown: 0s
 alerter:
   min_severity: high
   min_severity_by_source:
@@ -95,27 +96,47 @@ alerter:
 		time.sleep(0.5)
 
 		file_path = watch_dir / "arbitrary-assessment-payload.bin"
+		renamed_path = watch_dir / "renamed-assessment-payload.bin"
+		nested_file = watch_dir / "created-after-start" / "deep" / "nested-payload.bin"
+		expected_file_events = {
+			("create", str(file_path)),
+			("write", str(file_path)),
+			("rename", str(file_path)),
+			("remove", str(renamed_path)),
+			("create", str(nested_file)),
+		}
+		seen_file_events = set()
 		file_path.write_bytes(b"created by LaunchAgent E2E\n")
+		file_path.write_bytes(b"overwritten by LaunchAgent E2E\n")
+		file_path.rename(renamed_path)
+		renamed_path.unlink()
+		nested_file.parent.mkdir(parents=True)
+		# Give the recursive watcher time to register the new tree before checking
+		# file events. A file written during watch registration can be missed.
+		time.sleep(0.3)
+		nested_file.write_bytes(b"created in a nested directory after startup\n")
 		child = subprocess.Popen(["/bin/sleep", "12"])
-		got_file = got_process = False
+		got_process = False
 		slack_alerts = 0
 		deadline = time.monotonic() + 10
-		while time.monotonic() < deadline and not (got_file and got_process and slack_alerts >= 2):
+		while time.monotonic() < deadline and not (not expected_file_events and got_process and slack_alerts >= 2):
 			try:
 				payload = Sink.received.get(timeout=0.25)
 			except queue.Empty:
 				continue
-			if payload.get("source") == "file_access" and payload.get("resource") == str(file_path):
-				got_file = True
+			if payload.get("source") == "file_access":
+				observed = (payload.get("action"), payload.get("resource"))
+				seen_file_events.add(observed)
+				expected_file_events.discard(observed)
 			if payload.get("source") == "process" and payload.get("pid") == child.pid:
 				if not payload.get("executable") or not payload.get("user_id"):
 					raise AssertionError(f"process alert omitted identity context: {payload}")
 				got_process = True
 			if isinstance(payload.get("blocks"), list):
 				slack_alerts += 1
-		if not got_file or not got_process or slack_alerts < 2:
-			raise AssertionError(f"missing LaunchAgent alerts: file={got_file}, process={got_process}, slack={slack_alerts}; log={log_file.read_text(errors='replace')}")
-		print("PASS: LaunchAgent startup, file/process webhooks, and environment-backed Slack delivery")
+		if expected_file_events or not got_process or slack_alerts < 2:
+			raise AssertionError(f"missing LaunchAgent alerts: file events={sorted(expected_file_events)}, seen={sorted(seen_file_events)}, process={got_process}, slack={slack_alerts}; log={log_file.read_text(errors='replace')}")
+		print("PASS: LaunchAgent startup, file create/write/rename/delete, nested-tree coverage, process webhook, and Slack delivery")
 		child.terminate()
 		child.wait(timeout=5)
 		return 0
