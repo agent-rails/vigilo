@@ -43,9 +43,9 @@ On Linux, `sudo loginctl enable-linger "$USER"` keeps the user service running a
 Download the archive for your Linux CPU from [Releases](https://github.com/agent-rails/vigilo/releases). For a typical 64-bit Intel/AMD host, extract and install it like this:
 
 ```bash
-mkdir vigilo-v0.2.1
-tar xzf vigilo_0.2.1_linux_amd64.tar.gz -C vigilo-v0.2.1
-cd vigilo-v0.2.1
+mkdir vigilo-v0.2.2
+tar xzf vigilo_0.2.2_linux_amd64.tar.gz -C vigilo-v0.2.2
+cd vigilo-v0.2.2
 sudo bash deploy/install.sh
 ```
 

@@ -74,7 +74,7 @@ release:
 
     Personal-system observation and alerting: filesystem
     create/write events, sampled process and network activity, and optional
-    supply-chain checks. See CHANGELOG.md for v0.2.1 changes and current limits.
+    supply-chain checks. See CHANGELOG.md for v0.2.2 changes and current limits.
 
     ### Quick start
 
