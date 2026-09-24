@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,31 @@ func TestAlerterSourceSeverityOverridesDecode(t *testing.T) {
 	}
 	if got := cfg.Alerter.MinSeverityBySource["file_access"]; got != "info" {
 		t.Fatalf("file_access threshold = %q, want info", got)
+	}
+}
+
+func TestPersonalExampleConfigEnablesPersonalAlerts(t *testing.T) {
+	data, err := os.ReadFile("../../config.personal.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("decode personal example config: %v", err)
+	}
+	if len(cfg.WatchPaths) < 2 {
+		t.Fatalf("personal example must include common user paths, got %v", cfg.WatchPaths)
+	}
+	if !cfg.ProcessMonitor.ReportNewProcesses {
+		t.Fatal("personal example must inventory newly observed processes")
+	}
+	if cfg.SignalCooldown != 0 {
+		t.Fatalf("personal example signal cooldown = %s, want zero to report every observed change", cfg.SignalCooldown)
+	}
+	for _, source := range []string{"file_access", "process"} {
+		if got := cfg.Alerter.MinSeverityBySource[source]; got != "info" {
+			t.Errorf("personal example %s alert threshold = %q, want info", source, got)
+		}
 	}
 }
 

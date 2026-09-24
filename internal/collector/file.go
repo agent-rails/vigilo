@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,7 @@ type FileWatcher struct {
 	wg            sync.WaitGroup
 	rootState     map[string]bool
 	parentWatches map[string]bool
+	parentInfo    map[string]os.FileInfo
 	watchMu       sync.Mutex
 }
 
@@ -75,7 +77,7 @@ func NewFileWatcher(paths, exclude []string, out chan<- Event, suppress ...*Supp
 	return &FileWatcher{
 		paths: paths, roots: roots, exclude: exclude, suppress: sm, out: out, watcher: w,
 		stop: make(chan struct{}), rootState: make(map[string]bool),
-		parentWatches: make(map[string]bool),
+		parentWatches: make(map[string]bool), parentInfo: make(map[string]os.FileInfo),
 	}, nil
 }
 
@@ -140,25 +142,31 @@ func (fw *FileWatcher) addNearestParentWatch(root string) error {
 		if err == nil && info.IsDir() {
 			fw.watchMu.Lock()
 			alreadyWatched := fw.parentWatches[parent]
+			previousInfo := fw.parentInfo[parent]
 			fw.watchMu.Unlock()
+			if alreadyWatched && previousInfo != nil && os.SameFile(previousInfo, info) {
+				return nil
+			}
 			if alreadyWatched {
-				if parent == string(filepath.Separator) {
-					return nil
-				}
-				parent = filepath.Dir(parent)
-				continue
+				fw.watchMu.Lock()
+				delete(fw.parentWatches, parent)
+				delete(fw.parentInfo, parent)
+				fw.watchMu.Unlock()
+				_ = fw.watcher.Remove(parent)
 			}
 			if err := fw.watcher.Add(parent); err != nil {
 				return err
 			}
+			currentInfo, statErr := os.Stat(parent)
+			if statErr != nil {
+				_ = fw.watcher.Remove(parent)
+				return statErr
+			}
 			fw.watchMu.Lock()
 			fw.parentWatches[parent] = true
+			fw.parentInfo[parent] = currentInfo
 			fw.watchMu.Unlock()
-			if parent == string(filepath.Separator) {
-				return nil
-			}
-			parent = filepath.Dir(parent)
-			continue
+			return nil
 		}
 		next := filepath.Dir(parent)
 		if next == parent {
@@ -280,6 +288,7 @@ func (fw *FileWatcher) loop() {
 	for {
 		select {
 		case <-reconcile.C:
+			fw.reconcileParentWatches()
 			for _, root := range fw.roots {
 				if !fw.rootState[root] {
 					if err := fw.watchRoot(root); err != nil {
@@ -306,13 +315,7 @@ func (fw *FileWatcher) loop() {
 				}
 			}
 			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
-				fw.watchMu.Lock()
-				for parent := range fw.parentWatches {
-					if pathWithinRoot(parent, rootPath) {
-						delete(fw.parentWatches, parent)
-					}
-				}
-				fw.watchMu.Unlock()
+				fw.removeWatchesUnder(rootPath)
 				for _, root := range fw.roots {
 					if pathWithinRoot(root, rootPath) {
 						fw.rootState[root] = false
@@ -407,10 +410,78 @@ func (fw *FileWatcher) loop() {
 			fw.emitCoverageGap("", "watch_provider_error", err)
 			fw.watchMu.Lock()
 			fw.parentWatches = make(map[string]bool)
+			fw.parentInfo = make(map[string]os.FileInfo)
 			fw.watchMu.Unlock()
 			for _, root := range fw.roots {
 				fw.rootState[root] = false
 			}
+		}
+	}
+}
+
+// removeWatchesUnder removes every fsnotify watch attached below a replaced
+// directory path. Recursive watches have their own kqueue descriptors, so
+// removing only the parent leaves them observing the old subtree inode.
+func (fw *FileWatcher) removeWatchesUnder(root string) {
+	watches := fw.watcher.WatchList()
+	sort.Slice(watches, func(i, j int) bool { return len(watches[i]) > len(watches[j]) })
+	for _, path := range watches {
+		if pathWithinRoot(path, root) {
+			_ = fw.watcher.Remove(path)
+		}
+	}
+
+	fw.watchMu.Lock()
+	for path := range fw.parentWatches {
+		if pathWithinRoot(path, root) {
+			delete(fw.parentWatches, path)
+			delete(fw.parentInfo, path)
+		}
+	}
+	fw.watchMu.Unlock()
+}
+
+// reconcileParentWatches detects a parent directory replaced through an
+// unwatched higher ancestor. kqueue follows the old directory inode after a
+// rename, so a healthy-looking path can otherwise stay attached to stale
+// coverage indefinitely. Stat identity checks let us watch only the nearest
+// existing parent at startup without retaining a descriptor for every ancestor.
+func (fw *FileWatcher) reconcileParentWatches() {
+	fw.watchMu.Lock()
+	parents := make(map[string]os.FileInfo, len(fw.parentInfo))
+	for parent, info := range fw.parentInfo {
+		parents[parent] = info
+	}
+	fw.watchMu.Unlock()
+
+	for parent, oldInfo := range parents {
+		currentInfo, err := os.Stat(parent)
+		if err == nil && os.SameFile(oldInfo, currentInfo) {
+			continue
+		}
+
+		fw.watchMu.Lock()
+		storedInfo := fw.parentInfo[parent]
+		if storedInfo == nil || !os.SameFile(oldInfo, storedInfo) {
+			fw.watchMu.Unlock()
+			continue
+		}
+		fw.watchMu.Unlock()
+		fw.removeWatchesUnder(parent)
+
+		for _, root := range fw.roots {
+			if !pathWithinRoot(root, parent) {
+				continue
+			}
+			fw.rootState[root] = false
+			cause := err
+			if cause == nil {
+				cause = fmt.Errorf("parent directory was replaced")
+			}
+			if watchErr := fw.watchRoot(root); watchErr != nil {
+				fw.emitCoverageGap(root, "watch_root_unavailable", watchErr)
+			}
+			fw.emitCoverageGap(root, "watch_parent_changed", cause)
 		}
 	}
 }

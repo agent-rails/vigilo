@@ -39,8 +39,83 @@ jobs:
       - name: build
         run: go build ./...
 
+      - name: Verify personal credential parser
+        run: sh scripts/test-personal-env.sh
+
       - name: test
         run: go test ./... -race -timeout 60s
+
+  auditd-e2e:
+    name: Linux auditd live E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enable host audit logging
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y auditd
+          sudo systemctl start auditd
+          sudo auditctl -s
+
+      - name: Build live collector test
+        run: go test -c -o /tmp/vigilo-collector.test ./internal/collector
+
+      - name: Verify real file and short-lived execution attribution
+        run: sudo env VIGILO_AUDITD_E2E=1 /tmp/vigilo-collector.test -test.run '^TestAuditdLiveFileAndExecAttribution$' -test.timeout 30s -test.v
+
+  linux-personal-service-e2e:
+    name: Linux systemd user service E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start the runner user's systemd manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          runtime_dir="/run/user/$(id -u)"
+          for attempt in $(seq 1 30); do
+            test -S "$runtime_dir/bus" && break
+            sleep 1
+          done
+          test -S "$runtime_dir/bus"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus" >> "$GITHUB_ENV"
+
+      - name: Verify user service starts and delivers file/process alerts
+        run: python3 scripts/e2e-linux-user-service.py
+
+      - name: Stop the runner user's persistent manager
+        if: always()
+        run: sudo loginctl disable-linger "$USER"
+
+  macos-launch-agent-e2e:
+    name: macOS LaunchAgent E2E
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-platform Go tests
+        run: go test ./... -race -timeout 90s
+
+      - name: Verify LaunchAgent startup and alert delivery
+        run: python3 scripts/e2e-macos-launch-agent.py
 
   agent:
     name: ts agent typecheck

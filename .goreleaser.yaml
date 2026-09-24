@@ -35,11 +35,16 @@ archives:
           - zip
     files:
       - config.example.yaml
+      - config.personal.example.yaml
       - README.md
       - SECURITY.md
       - CHANGELOG.md
       - deploy/vigilo.service
       - deploy/install.sh
+      - deploy/user/install.sh
+      - deploy/user/run-vigilo.sh
+      - deploy/user/vigilo.service
+      - deploy/macos/install-launch-agent.py
 
 checksum:
   name_template: checksums.txt
@@ -67,21 +72,21 @@ release:
   header: |
     ## Vigilo {{ .Version }}
 
-    OS-level observation and alerting for crypto infrastructure: filesystem
+    Personal-system observation and alerting: filesystem
     create/write events, sampled process and network activity, and optional
-    supply-chain checks. See CHANGELOG.md for v0.2.1 changes and current limits.
+    supply-chain checks. See CHANGELOG.md for v0.2.2 changes and current limits.
 
     ### Quick start
 
     ```bash
     tar xzf vigilo_{{ .Version }}_linux_amd64.tar.gz
-    sudo bash deploy/install.sh
+    bash deploy/user/install.sh
     ```
 
     Choose the archive matching your operating system and CPU. The installer
-    is for Linux with systemd; macOS users run the bundled binary directly.
-    Existing config is preserved. Configure watch paths and alert delivery
-    before starting the service. HTTP MCP now requires a bearer token by default.
+    installs a per-user service on Linux or prepares a LaunchAgent on macOS.
+    Existing config is preserved. Edit watch paths and alert delivery before
+    enabling the service. HTTP MCP requires a bearer token by default.
 
     See [README](https://github.com/agent-rails/vigilo#readme) and
     [SECURITY.md](https://github.com/agent-rails/vigilo/blob/main/SECURITY.md)

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.2
+
+### Changes
+
+- Add a personal login-user configuration with notifications for watched-path changes and first-seen processes.
+- Add per-user systemd and macOS LaunchAgent setup, with owner-only config, state, and notification-secret files.
+- Add live Linux auditd acceptance and per-user service end-to-end checks to CI; add a macOS LaunchAgent end-to-end check.
+
+### Limits
+
+- Linux auditd behavior and event volume still require validation across supported distributions and representative workloads.
+- macOS process monitoring remains polling-based until Apple grants the Endpoint Security entitlement and the signed provider is implemented and tested.
+- File coverage is limited to configured paths; no provider prevents a sufficiently privileged attacker from disabling or tampering with Vigilo.
+
 ## v0.2.1
 
 ### Changes
