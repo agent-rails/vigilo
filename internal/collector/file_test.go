@@ -286,6 +286,143 @@ parentWatchReinstalled:
 	}
 }
 
+func TestFileWatcherUsesOnlyNearestExistingParent(t *testing.T) {
+	base := t.TempDir()
+	nearest := filepath.Join(base, "existing")
+	if err := os.Mkdir(nearest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(nearest, "missing", "root")
+	watcher, err := NewFileWatcher([]string{root}, nil, make(chan Event, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	watcher.watchMu.Lock()
+	defer watcher.watchMu.Unlock()
+	if len(watcher.parentWatches) != 1 || !watcher.parentWatches[nearest] {
+		t.Fatalf("parent watches = %v; want only nearest existing parent %q", watcher.parentWatches, nearest)
+	}
+}
+
+func TestFileWatcherRecoversWhenHigherAncestorIsReplaced(t *testing.T) {
+	base := t.TempDir()
+	tree := filepath.Join(base, "tree")
+	parent := filepath.Join(tree, "parent")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "watched.bin")
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 32)
+	watcher, err := NewFileWatcher([]string{path}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Rename(tree, filepath.Join(base, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(7 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceHealth && event.Action == "watch_parent_changed" {
+				goto replacementWatchRestored
+			}
+		case <-deadline:
+			t.Fatal("watcher did not detect a replaced higher ancestor")
+		}
+	}
+
+replacementWatchRestored:
+	if err := os.WriteFile(path, []byte("after recovery"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Resource == path && event.Action == "write" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("watcher did not observe writes after replacing a higher ancestor")
+		}
+	}
+}
+
+func TestFileWatcherRecoversNestedDirectoryWatchesAfterAncestorReplacement(t *testing.T) {
+	base := t.TempDir()
+	tree := filepath.Join(base, "tree")
+	root := filepath.Join(tree, "watchroot")
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(nested, "watched.bin")
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 32)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Rename(tree, filepath.Join(base, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.NewTimer(8 * time.Second)
+	defer deadline.Stop()
+	writeTicker := time.NewTicker(200 * time.Millisecond)
+	defer writeTicker.Stop()
+	sawCoverageSignal := false
+	for {
+		select {
+		case event := <-events:
+			if event.Source == SourceHealth && strings.HasPrefix(event.Action, "watch_") {
+				sawCoverageSignal = true
+				t.Logf("coverage event during recovery: %+v", event)
+			}
+			if event.Source == SourceFile && event.Resource == path && event.Action == "write" {
+				return
+			}
+		case <-writeTicker.C:
+			if err := os.WriteFile(path, []byte("after recovery"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline.C:
+			t.Fatalf("nested file watch was not restored after replacing a higher ancestor (coverage signal=%v, watches=%v)", sawCoverageSignal, watcher.watcher.WatchList())
+		}
+	}
+}
+
 func TestExcludedFileDoesNotSkipSiblingDirectories(t *testing.T) {
 	root := t.TempDir()
 	excluded := filepath.Join(root, "ignore.txt")
