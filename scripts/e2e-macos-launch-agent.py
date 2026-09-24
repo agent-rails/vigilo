@@ -133,11 +133,11 @@ alerter:
 		renamed_path.unlink()
 		wait_for_file_event({"remove"}, renamed_path)
 		nested_file.parent.mkdir(parents=True)
-		# Give the recursive watcher time to register the new tree. A file written
-		# before registration finishes can be missed (documented coverage limit).
-		time.sleep(0.3)
+		# Create the leaf immediately to exercise the registration race. If the
+		# operation precedes its watch, Vigilo must report its present state
+		# without claiming whether it was created or written during that gap.
 		nested_file.write_bytes(b"created in a nested directory after startup\n")
-		wait_for_file_event({"create"}, nested_file)
+		wait_for_file_event({"create", "write", "reconciled_present"}, nested_file)
 		child = subprocess.Popen(["/bin/sleep", "12"])
 		while True:
 			payload = next_payload()

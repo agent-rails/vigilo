@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,7 +282,7 @@ parentWatchReinstalled:
 				return
 			}
 		case <-deadline:
-			t.Fatal("watcher did not reinstall parent watch after containing directory recreation")
+			t.Fatalf("watcher did not reinstall parent watch after containing directory recreation; watches=%v parents=%v tracked=%v", watcher.watcher.WatchList(), watcher.parentWatches, watcher.watchedDirs)
 		}
 	}
 }
@@ -639,11 +640,10 @@ func drainEvents(t *testing.T, events <-chan Event) {
 	}
 }
 
-// TestFileWatcherWatchesDeepDirectoryCreatedAfterStart confirms a tree created
-// in one mkdir -p is watched all the way down. Only the top level yields a
-// Create event — the intermediate directories already exist by the time it
-// arrives — so adding just that level left the leaves unwatched and files
-// written there invisible.
+// TestFileWatcherWatchesDeepDirectoryCreatedAfterStart confirms a tree and a
+// file created immediately beneath it are observed. A file found while the
+// new subtree is being registered must be described as present, not assigned
+// an operation that the watcher did not see.
 func TestFileWatcherWatchesDeepDirectoryCreatedAfterStart(t *testing.T) {
 	dir := t.TempDir()
 
@@ -663,7 +663,6 @@ func TestFileWatcherWatchesDeepDirectoryCreatedAfterStart(t *testing.T) {
 	if err := os.MkdirAll(deep, 0700); err != nil {
 		t.Fatalf("mkdir -p: %v", err)
 	}
-	drainEvents(t, events)
 
 	targetFile := filepath.Join(deep, "wallet.json")
 	if err := os.WriteFile(targetFile, []byte(`{"key":"secret"}`), 0600); err != nil {
@@ -675,6 +674,12 @@ func TestFileWatcherWatchesDeepDirectoryCreatedAfterStart(t *testing.T) {
 		select {
 		case e := <-events:
 			if e.Resource == targetFile {
+				if e.Action != "reconciled_present" && e.Action != "create" && e.Action != "write" {
+					t.Errorf("action = %q, want reconciled_present, create, or write", e.Action)
+				}
+				if e.Action == "reconciled_present" && !strings.Contains(e.Detail, "preceding file operations are unknown") {
+					t.Errorf("reconciliation event overstates what happened: %q", e.Detail)
+				}
 				if e.Severity != SeverityCritical {
 					t.Errorf("severity = %q, want critical for wallet.json", e.Severity)
 				}
@@ -683,5 +688,88 @@ func TestFileWatcherWatchesDeepDirectoryCreatedAfterStart(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timeout: no event for a file written inside a deep directory created after startup")
 		}
+	}
+}
+
+func TestFileWatcherReconcilesFilesAlreadyPresentInNewSubtree(t *testing.T) {
+	root := t.TempDir()
+	subtree := filepath.Join(root, "created-after-start")
+	target := filepath.Join(subtree, "deep", "wallet.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("wallet present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	if err := watcher.enqueueSubtreeScan(root, subtree); err != nil {
+		t.Fatalf("enqueue subtree reconciliation: %v", err)
+	}
+	for len(watcher.scanQueue) > 0 {
+		watcher.processSubtreeScanBatch()
+	}
+
+	for len(events) > 0 {
+		event := <-events
+		if event.Source == SourceFile && event.Resource == target {
+			if event.Action != "reconciled_present" {
+				t.Fatalf("action = %q, want reconciled_present", event.Action)
+			}
+			if !strings.Contains(event.Detail, "preceding file operations are unknown") {
+				t.Fatalf("reconciliation detail overstates what happened: %q", event.Detail)
+			}
+			if event.Severity != SeverityCritical {
+				t.Fatalf("severity = %q, want critical for wallet.json", event.Severity)
+			}
+			return
+		}
+	}
+	t.Fatalf("reconciliation did not report existing file %s", target)
+}
+
+func TestFileWatcherProcessesLargeSubtreeIncrementally(t *testing.T) {
+	root := t.TempDir()
+	subtree := filepath.Join(root, "created-after-start")
+	if err := os.Mkdir(subtree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		path := filepath.Join(subtree, fmt.Sprintf("file-%03d", i))
+		if err := os.WriteFile(path, []byte("present"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	events := make(chan Event, 512)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+	if err := watcher.enqueueSubtreeScan(root, subtree); err != nil {
+		t.Fatalf("enqueue subtree reconciliation: %v", err)
+	}
+
+	watcher.processSubtreeScanBatch()
+	firstBatch := len(events)
+	if firstBatch == 0 || firstBatch > subtreeScanBatchSize {
+		t.Fatalf("first batch emitted %d events; want 1..%d", firstBatch, subtreeScanBatchSize)
+	}
+	if len(watcher.scanQueue) == 0 {
+		t.Fatal("large subtree was fully processed in one event-loop batch")
+	}
+
+	for len(watcher.scanQueue) > 0 {
+		watcher.processSubtreeScanBatch()
+	}
+	if got := len(events); got != 300 {
+		t.Fatalf("reconciled %d files, want 300", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,81 @@ func TestAuditdLiveFileAndExecAttribution(t *testing.T) {
 			t.Fatalf("timed out waiting for audit events (actions=%v exec=%v); check audit rules and %s", required, gotExec, logPath)
 		}
 	}
+
+	// Exercise a modest burst and compare the kernel's audit loss counter.
+	// This proves delivery for this controlled load only; it does not establish
+	// a sustained-throughput ceiling.
+	lostBefore, err := auditLostCount()
+	if err != nil {
+		t.Fatalf("read audit loss counter before burst: %v", err)
+	}
+	const burstFiles = 128
+	burstPaths := make(map[string]bool, burstFiles)
+	for i := 0; i < burstFiles; i++ {
+		path := filepath.Join(root, fmt.Sprintf("burst-%03d.bin", i))
+		burstPaths[path] = false
+		if err := os.WriteFile(path, []byte("burst"), 0600); err != nil {
+			t.Fatalf("create burst file %d: %v", i, err)
+		}
+	}
+	burstDeadline := time.After(10 * time.Second)
+	for {
+		complete := true
+		for _, seen := range burstPaths {
+			if !seen {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			break
+		}
+		select {
+		case event := <-events:
+			if event.Source == SourceFile && event.Action == "create" {
+				if _, expected := burstPaths[event.Resource]; expected {
+					burstPaths[event.Resource] = true
+				}
+			}
+		case <-burstDeadline:
+			t.Fatalf("timed out waiting for burst file audit events (%d/%d)", countSeen(burstPaths), burstFiles)
+		}
+	}
+	lostAfter, err := auditLostCount()
+	if err != nil {
+		t.Fatalf("read audit loss counter after burst: %v", err)
+	}
+	if lostAfter != lostBefore {
+		t.Fatalf("kernel audit lost counter increased during %d-file burst: %d -> %d", burstFiles, lostBefore, lostAfter)
+	}
+}
+
+func countSeen(paths map[string]bool) int {
+	count := 0
+	for _, seen := range paths {
+		if seen {
+			count++
+		}
+	}
+	return count
+}
+
+func auditLostCount() (uint64, error) {
+	output, err := runAuditctl("-s")
+	if err != nil {
+		return 0, fmt.Errorf("auditctl -s: %w: %s", err, output)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "lost" {
+			value, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse lost counter %q: %w", fields[1], err)
+			}
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("auditctl -s output did not contain a lost counter: %s", output)
 }
 
 func allAuditActionsSeen(required map[string]map[string]bool) bool {
