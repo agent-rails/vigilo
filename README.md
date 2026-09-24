@@ -1,48 +1,46 @@
 # Vigilo
 
-Vigilo is an open-source monitor for unexpected activity on personal Linux and macOS systems. It reports file changes under paths you choose and observes process activity to help you investigate things that happen while running unfamiliar software. Optional Linux audit rules can add short-lived execution events and identify which process accessed a watched file.
+Vigilo watches selected paths and reports file changes and process activity on personal Linux and macOS systems. It can help you investigate what changed while running unfamiliar software.
 
-Vigilo reports evidence; it does not block activity or determine that something is malicious. The default file watcher does not see reads or identify which process changed a file. Process polling can miss brief activity. See [monitoring coverage](docs/PERSONAL_MONITORING.md) and [security limits](SECURITY.md).
+Vigilo reports observations; it does not decide whether activity is malicious or block it. Coverage depends on the paths and providers you configure. The default file watcher does not identify which process changed a file, and process polling can miss short-lived processes. See [coverage and limitations](docs/PERSONAL_MONITORING.md).
 
-## Quick start for a personal machine
+## Install
 
-Download and extract the archive for your operating system and CPU from [Releases](https://github.com/agent-rails/vigilo/releases). The archive includes the Vigilo binary, so you do not need Go. From the extracted directory, run the installer as your login user (no `sudo`):
+Download and extract the archive for your operating system and CPU from [Releases](https://github.com/agent-rails/vigilo/releases). No Go installation is needed. Run the user-level installer from the extracted directory:
 
-```bash
+```sh
 bash deploy/user/install.sh
 ```
 
-Before running unfamiliar code, edit `~/.config/vigilo/config.yaml`: remove example paths that do not exist and add the project or other locations you want Vigilo to watch. Vigilo only monitors configured paths. The template reports each observed file change and each process first seen by polling, so alerts may be frequent.
+## Configure
 
-To receive Slack alerts, put your webhook URL in `~/.config/vigilo/env`:
+Edit `~/.config/vigilo/config.yaml` and add the project or system paths you want Vigilo to watch. Remove example paths you do not use. Vigilo only watches configured paths.
+
+To receive Slack alerts, add your webhook to `~/.config/vigilo/env`:
 
 ```sh
 VIGILO_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 ```
 
-Start Vigilo in your user session:
+## Start
 
-```bash
-# Linux with systemd --user
+```sh
+# Linux
 systemctl --user enable --now vigilo.service
 
-# macOS with launchd (use instead of the Linux command)
+# macOS
 python3 deploy/macos/install-launch-agent.py --start
 ```
 
-On Linux, use `journalctl --user -u vigilo -f` to view logs. To keep the user service running after logout, enable lingering with `sudo loginctl enable-linger "$USER"`. On macOS, use `tail -f "$HOME/Library/Logs/Vigilo/stderr.log"` to view logs. To stop, run `systemctl --user disable --now vigilo.service` on Linux or `python3 deploy/macos/install-launch-agent.py --uninstall` on macOS. See [`config.example.yaml`](config.example.yaml) for other alert channels and settings.
+To stop Vigilo, use `systemctl --user disable --now vigilo.service` on Linux or `python3 deploy/macos/install-launch-agent.py --uninstall` on macOS.
 
-## What it monitors
+## What to expect
 
-- **Files:** creates, writes, removes, and renames under configured paths. File events do not identify the writer.
-- **Processes and network:** sampled activity. Polling may miss processes that start and exit between scans.
-- **Linux auditd (optional):** with matching host rules and readable audit logs, can report short-lived executions and attribute selected file activity. Vigilo does not install the rules automatically.
-- **Project checks (optional):** scans configured npm and Terraform project roots for suspicious changes. These checks are indicators for review, not proof of compromise.
+- File changes are reported for watched paths. Rename events include an explicit note when the operating system does not reveal the destination. A same-directory rename followed by a file create is labeled as a possible atomic save or in-directory move; Vigilo cannot prove the two events are related.
+- Process and network observations use polling and may miss brief activity.
+- Optional Linux `auditd` rules can add short-lived execution events and identify processes that access selected files. Vigilo does not install these rules for you.
+- Optional npm and Terraform checks report suspicious project changes for investigation; they do not prove compromise.
 
-On macOS, process monitoring remains polling-based and can miss short-lived activity. On Linux, auditd coverage depends on your host rules, log access, and event volume. A file or process name alone does not establish intent. See [coverage and tested limits](docs/PERSONAL_MONITORING.md).
+For Linux logs, run `journalctl --user -u vigilo -f`. For macOS logs, run `tail -f "$HOME/Library/Logs/Vigilo/stderr.log"`.
 
-## System-wide Linux service
-
-For a system-wide install, download and extract the `linux_amd64` or `linux_arm64` release archive. From the extracted directory, run `sudo bash deploy/install.sh`. The service runs as a separate `vigilo` account; configure paths it can read in `/etc/vigilo/config.yaml`. Review the permissions and alert setup in [SECURITY.md](SECURITY.md) before enabling it.
-
-For MCP, the web dashboard, multi-host monitoring, suppression rules, or source builds, see [`config.example.yaml`](config.example.yaml), [DESIGN.md](docs/DESIGN.md), and [SECURITY.md](SECURITY.md). Do not expose Vigilo's MCP or dashboard ports directly to the public internet.
+See [`config.example.yaml`](config.example.yaml) for settings, [security limits](SECURITY.md), and [monitoring coverage](docs/PERSONAL_MONITORING.md). For a [system-wide Linux install](deploy/install.sh), MCP, or the dashboard, see the [design guide](docs/DESIGN.md). Do not expose MCP or dashboard ports directly to the public internet.

@@ -45,17 +45,21 @@ func slackPayload(e collector.Event) map[string]any {
 	resource := notificationText(e.Resource)
 	action := notificationText(e.Action)
 	source := notificationText(string(e.Source))
+	detail := ""
+	if e.Detail != "" {
+		detail = "\nDetail: " + notificationText(e.Detail)
+	}
 	payload := map[string]any{
 		"text": fmt.Sprintf("%s [%s] %s -> %s (%s)",
 			emoji, strings.ToUpper(string(e.Severity)),
-			action, resource, source),
+			action, resource, source) + detail,
 		"blocks": []map[string]any{
 			{
 				"type": "section",
 				"text": map[string]any{
 					"type": "plain_text",
 					"text": fmt.Sprintf(
-						"%s Vigilo Immediate Alert -- %s\nAction: %s\nResource: %s\nSource: %s%s",
+						"%s Vigilo Immediate Alert -- %s\nAction: %s\nResource: %s\nSource: %s%s%s",
 						emoji,
 						strings.ToUpper(string(e.Severity)),
 						action, resource, source,
@@ -75,6 +79,7 @@ func slackPayload(e collector.Event) map[string]any {
 							}
 							return ""
 						}(),
+						detail,
 					),
 				},
 			},

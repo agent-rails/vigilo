@@ -17,12 +17,20 @@ import (
 const (
 	subtreeScanBatchSize = 128
 	subtreeScanQueueMax  = 4096
+	renameMatchWindow    = 150 * time.Millisecond
+	pendingRenameMax     = 4096
 )
 
 type subtreeScanTask struct {
 	root string
 	path string
 	dir  *os.File
+}
+
+type pendingFileRename struct {
+	path string
+	root string
+	at   time.Time
 }
 
 // sensitivePatterns marks accesses to these as high/critical severity.
@@ -74,6 +82,7 @@ type FileWatcher struct {
 	scanPending   map[string]bool
 	scanComplete  map[string]bool
 	scanQueue     []subtreeScanTask
+	pendingRename []pendingFileRename
 	watchMu       sync.Mutex
 }
 
@@ -413,6 +422,55 @@ func (fw *FileWatcher) emitFileEvent(action, path, detail string) {
 	}
 }
 
+func (fw *FileWatcher) holdRename(path string, at time.Time) {
+	if len(fw.pendingRename) >= pendingRenameMax {
+		oldest := fw.pendingRename[0]
+		fw.emitFileEvent("rename", oldest.path,
+			"rename observed; destination unknown (rename-correlation queue reached its limit)")
+		fw.pendingRename = fw.pendingRename[1:]
+	}
+	fw.pendingRename = append(fw.pendingRename, pendingFileRename{
+		path: filepath.Clean(path), root: fw.rootForPath(path), at: at,
+	})
+}
+
+// correlateSameDirectoryRename joins a rename source with a file create in the
+// same watched directory observed shortly afterward. fsnotify does not expose
+// the destination or a provider rename cookie, so this is explicitly a likely
+// atomic-save/in-directory-move correlation, not proof that these operations
+// belong together. The create event retains the source path in its detail.
+func (fw *FileWatcher) correlateSameDirectoryRename(path string, at time.Time) string {
+	path = filepath.Clean(path)
+	root := fw.rootForPath(path)
+	for i := len(fw.pendingRename) - 1; i >= 0; i-- {
+		pending := fw.pendingRename[i]
+		age := at.Sub(pending.at)
+		if age < 0 || age > renameMatchWindow || pending.root != root ||
+			filepath.Dir(pending.path) != filepath.Dir(path) {
+			continue
+		}
+		fw.pendingRename = append(fw.pendingRename[:i], fw.pendingRename[i+1:]...)
+		return fmt.Sprintf(
+			"same-directory rename from %s was observed within %s; this may be an atomic save or in-directory move, and the watcher cannot confirm the destination",
+			pending.path, renameMatchWindow,
+		)
+	}
+	return ""
+}
+
+func (fw *FileWatcher) flushExpiredRenames(now time.Time) {
+	kept := fw.pendingRename[:0]
+	for _, pending := range fw.pendingRename {
+		if now.Sub(pending.at) >= renameMatchWindow {
+			fw.emitFileEvent("rename", pending.path,
+				"rename observed; destination unknown because the filesystem provider reports only the source path")
+			continue
+		}
+		kept = append(kept, pending)
+	}
+	fw.pendingRename = kept
+}
+
 func (fw *FileWatcher) isExcluded(path string) bool {
 	for _, ex := range fw.exclude {
 		root := normalizeWatchPath(ex)
@@ -459,8 +517,12 @@ func (fw *FileWatcher) loop() {
 	defer reconcile.Stop()
 	subtreeScan := time.NewTicker(5 * time.Millisecond)
 	defer subtreeScan.Stop()
+	renameFlush := time.NewTicker(25 * time.Millisecond)
+	defer renameFlush.Stop()
 	for {
 		select {
+		case now := <-renameFlush.C:
+			fw.flushExpiredRenames(now)
 		case <-subtreeScan.C:
 			fw.processSubtreeScanBatch()
 		case <-reconcile.C:
@@ -478,6 +540,7 @@ func (fw *FileWatcher) loop() {
 			}
 			// fsnotify reports create/write/remove/rename here, not file reads.
 			rootPath := filepath.Clean(event.Name)
+			eventDetail := ""
 			for _, root := range fw.roots {
 				if rootPath == root {
 					if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
@@ -530,6 +593,11 @@ func (fw *FileWatcher) loop() {
 					}
 				} else if info.IsDir() {
 					_ = fw.enqueueSubtreeScan(fw.rootForPath(event.Name), event.Name)
+				} else {
+					// A same-directory rename followed by a create is common for
+					// atomic saves. Preserve the evidence on the create event and
+					// avoid a second, misleading terminal rename alert.
+					eventDetail = fw.correlateSameDirectoryRename(event.Name, time.Now())
 				}
 			}
 			// Rename fires on the source path, so a key moved out of a watched
@@ -549,11 +617,16 @@ func (fw *FileWatcher) loop() {
 				case event.Has(fsnotify.Rename):
 					action = "rename"
 				}
+				if action == "rename" {
+					fw.holdRename(event.Name, time.Now())
+					continue
+				}
 				e := Event{
 					Source:    SourceFile,
 					Timestamp: time.Now(),
 					Action:    action,
 					Resource:  event.Name,
+					Detail:    eventDetail,
 					Severity:  sev,
 				}
 				if !fw.suppress.IsSuppressed(e) {
