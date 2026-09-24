@@ -305,6 +305,9 @@ func TestExcludedFileDoesNotSkipSiblingDirectories(t *testing.T) {
 	if err := watcher.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// Give kqueue/fsnotify time to activate the initial recursive watch before
+	// creating the child file; this test is about exclusions, not startup timing.
+	time.Sleep(100 * time.Millisecond)
 	path := filepath.Join(child, "visible.bin")
 	if err := os.WriteFile(path, []byte("visible"), 0o600); err != nil {
 		t.Fatal(err)
