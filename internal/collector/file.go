@@ -2,6 +2,7 @@ package collector
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,17 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 )
+
+const (
+	subtreeScanBatchSize = 128
+	subtreeScanQueueMax  = 4096
+)
+
+type subtreeScanTask struct {
+	root string
+	path string
+	dir  *os.File
+}
 
 // sensitivePatterns marks accesses to these as high/critical severity.
 var sensitivePatterns = []struct {
@@ -58,6 +70,10 @@ type FileWatcher struct {
 	rootState     map[string]bool
 	parentWatches map[string]bool
 	parentInfo    map[string]os.FileInfo
+	watchedDirs   map[string]bool
+	scanPending   map[string]bool
+	scanComplete  map[string]bool
+	scanQueue     []subtreeScanTask
 	watchMu       sync.Mutex
 }
 
@@ -78,6 +94,8 @@ func NewFileWatcher(paths, exclude []string, out chan<- Event, suppress ...*Supp
 		paths: paths, roots: roots, exclude: exclude, suppress: sm, out: out, watcher: w,
 		stop: make(chan struct{}), rootState: make(map[string]bool),
 		parentWatches: make(map[string]bool), parentInfo: make(map[string]os.FileInfo),
+		watchedDirs: make(map[string]bool), scanPending: make(map[string]bool),
+		scanComplete: make(map[string]bool),
 	}, nil
 }
 
@@ -104,6 +122,7 @@ func (fw *FileWatcher) Start() error {
 	fw.wg.Add(1)
 	go func() {
 		defer fw.wg.Done()
+		defer fw.closeSubtreeScans()
 		fw.loop()
 	}()
 	return nil
@@ -153,8 +172,9 @@ func (fw *FileWatcher) addNearestParentWatch(root string) error {
 				delete(fw.parentInfo, parent)
 				fw.watchMu.Unlock()
 				_ = fw.watcher.Remove(parent)
+				delete(fw.watchedDirs, parent)
 			}
-			if err := fw.watcher.Add(parent); err != nil {
+			if err := fw.addDirectoryWatch(parent); err != nil {
 				return err
 			}
 			currentInfo, statErr := os.Stat(parent)
@@ -226,7 +246,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 			return nil
 		}
 		if d.IsDir() {
-			if err := fw.watcher.Add(path); err != nil {
+			if err := fw.addDirectoryWatch(path); err != nil {
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -239,6 +259,158 @@ func (fw *FileWatcher) addRecursive(root string) error {
 		return err
 	}
 	return firstErr
+}
+
+func (fw *FileWatcher) addDirectoryWatch(path string) error {
+	path = filepath.Clean(path)
+	if fw.watchedDirs[path] {
+		return nil
+	}
+	if err := fw.watcher.Add(path); err != nil {
+		return err
+	}
+	fw.watchedDirs[path] = true
+	return nil
+}
+
+func (fw *FileWatcher) rootForPath(path string) string {
+	path = filepath.Clean(path)
+	best := ""
+	for _, root := range fw.roots {
+		if pathWithinRoot(path, root) && len(root) > len(best) {
+			best = root
+		}
+	}
+	return best
+}
+
+func (fw *FileWatcher) enqueueSubtreeScan(root, path string) error {
+	path = filepath.Clean(path)
+	if root == "" {
+		root = fw.rootForPath(path)
+	}
+	if root == "" || fw.isExcluded(path) || fw.scanPending[path] || fw.scanComplete[path] {
+		return nil
+	}
+	if len(fw.scanQueue) >= subtreeScanQueueMax {
+		err := fmt.Errorf("pending subtree scan limit (%d) reached", subtreeScanQueueMax)
+		fw.emitCoverageGap(root, "watch_subtree_queue_full", err)
+		return err
+	}
+	if err := fw.addDirectoryWatch(path); err != nil {
+		fw.emitCoverageGap(root, "watch_subtree_failed", err)
+		return err
+	}
+	fw.scanPending[path] = true
+	fw.scanQueue = append(fw.scanQueue, subtreeScanTask{root: root, path: path})
+	return nil
+}
+
+// processSubtreeScanBatch advances one dynamic subtree scan by a bounded
+// number of entries. It runs in the filesystem event loop so fsnotify events
+// keep draining between batches, while child directory watches are installed
+// before their contents are enumerated.
+func (fw *FileWatcher) processSubtreeScanBatch() {
+	if len(fw.scanQueue) == 0 {
+		return
+	}
+	task := fw.scanQueue[0]
+	fw.scanQueue = fw.scanQueue[1:]
+	if task.dir == nil {
+		dir, err := os.Open(task.path)
+		if err != nil {
+			fw.finishSubtreeScan(task, err)
+			return
+		}
+		task.dir = dir
+	}
+
+	entries, readErr := task.dir.ReadDir(subtreeScanBatchSize)
+	if readErr != nil && readErr != io.EOF {
+		fw.finishSubtreeScan(task, readErr)
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(task.path, entry.Name())
+		if fw.isExcluded(path) {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			fw.emitCoverageGap(task.root, "watch_subtree_symlink_skipped",
+				fmt.Errorf("symlink subtree is not followed: %s", path))
+			continue
+		}
+		if entry.IsDir() {
+			if err := fw.enqueueSubtreeScan(task.root, path); err != nil {
+				continue
+			}
+			continue
+		}
+		fw.emitFileEvent("reconciled_present", path,
+			"present while registering a newly created subtree; preceding file operations are unknown")
+	}
+
+	if readErr == io.EOF || len(entries) == 0 {
+		fw.finishSubtreeScan(task, nil)
+		return
+	}
+	fw.scanQueue = append(fw.scanQueue, task)
+}
+
+func (fw *FileWatcher) finishSubtreeScan(task subtreeScanTask, err error) {
+	if task.dir != nil {
+		_ = task.dir.Close()
+	}
+	delete(fw.scanPending, task.path)
+	if err != nil {
+		fw.emitCoverageGap(task.root, "watch_subtree_scan_failed", err)
+		return
+	}
+	fw.scanComplete[task.path] = true
+}
+
+func (fw *FileWatcher) cancelSubtreeScansUnder(root string) {
+	kept := fw.scanQueue[:0]
+	for _, task := range fw.scanQueue {
+		if pathWithinRoot(task.path, root) {
+			if task.dir != nil {
+				_ = task.dir.Close()
+			}
+			delete(fw.scanPending, task.path)
+			continue
+		}
+		kept = append(kept, task)
+	}
+	fw.scanQueue = kept
+	for path := range fw.scanComplete {
+		if pathWithinRoot(path, root) {
+			delete(fw.scanComplete, path)
+		}
+	}
+}
+
+func (fw *FileWatcher) closeSubtreeScans() {
+	for _, task := range fw.scanQueue {
+		if task.dir != nil {
+			_ = task.dir.Close()
+		}
+	}
+	fw.scanQueue = nil
+	fw.scanPending = make(map[string]bool)
+}
+
+func (fw *FileWatcher) emitFileEvent(action, path, detail string) {
+	e := Event{
+		Source: SourceFile, Timestamp: time.Now(), Action: action,
+		Resource: path, Detail: detail, Severity: severityForPath(path),
+	}
+	if fw.suppress.IsSuppressed(e) {
+		return
+	}
+	select {
+	case fw.out <- e:
+	case <-fw.stop:
+	}
 }
 
 func (fw *FileWatcher) isExcluded(path string) bool {
@@ -285,8 +457,12 @@ func pathWithinRoot(path, root string) bool {
 func (fw *FileWatcher) loop() {
 	reconcile := time.NewTicker(5 * time.Second)
 	defer reconcile.Stop()
+	subtreeScan := time.NewTicker(5 * time.Millisecond)
+	defer subtreeScan.Stop()
 	for {
 		select {
+		case <-subtreeScan.C:
+			fw.processSubtreeScanBatch()
 		case <-reconcile.C:
 			fw.reconcileParentWatches()
 			for _, root := range fw.roots {
@@ -315,6 +491,7 @@ func (fw *FileWatcher) loop() {
 				}
 			}
 			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				fw.cancelSubtreeScansUnder(rootPath)
 				fw.removeWatchesUnder(rootPath)
 				for _, root := range fw.roots {
 					if pathWithinRoot(root, rootPath) {
@@ -337,8 +514,9 @@ func (fw *FileWatcher) loop() {
 					}
 				}
 			}
-			// Extend directory coverage before forwarding the create event. A
-			// consumer may immediately create descendants after receiving it.
+			// Watch a new directory immediately, then scan it incrementally.
+			// Files already present during watch registration are reported as
+			// reconciled_present; transient earlier operations cannot be inferred.
 			if event.Has(fsnotify.Create) && fw.isRelevant(event.Name) && !fw.isExcluded(event.Name) {
 				info, statErr := os.Stat(event.Name)
 				if statErr != nil {
@@ -351,21 +529,7 @@ func (fw *FileWatcher) loop() {
 						}
 					}
 				} else if info.IsDir() {
-					if addErr := fw.addRecursive(event.Name); addErr != nil {
-						slog.Warn("file watcher: cannot watch new directory", "path", event.Name, "err", addErr)
-						for _, root := range fw.roots {
-							if event.Name == root || strings.HasPrefix(event.Name, root+string(filepath.Separator)) {
-								fw.rootState[root] = false
-								fw.emitCoverageGap(root, "watch_subtree_failed", addErr)
-							}
-						}
-					} else if event.Name == rootPath {
-						for _, root := range fw.roots {
-							if root == event.Name {
-								fw.rootState[root] = true
-							}
-						}
-					}
+					_ = fw.enqueueSubtreeScan(fw.rootForPath(event.Name), event.Name)
 				}
 			}
 			// Rename fires on the source path, so a key moved out of a watched
@@ -412,6 +576,10 @@ func (fw *FileWatcher) loop() {
 			fw.parentWatches = make(map[string]bool)
 			fw.parentInfo = make(map[string]os.FileInfo)
 			fw.watchMu.Unlock()
+			fw.watchedDirs = make(map[string]bool)
+			for _, path := range fw.watcher.WatchList() {
+				fw.watchedDirs[filepath.Clean(path)] = true
+			}
 			for _, root := range fw.roots {
 				fw.rootState[root] = false
 			}
@@ -428,6 +596,14 @@ func (fw *FileWatcher) removeWatchesUnder(root string) {
 	for _, path := range watches {
 		if pathWithinRoot(path, root) {
 			_ = fw.watcher.Remove(path)
+			delete(fw.watchedDirs, path)
+		}
+	}
+	// Some backends remove watches before delivering the Remove/Rename event,
+	// so WatchList may no longer contain a path that is still in our cache.
+	for path := range fw.watchedDirs {
+		if pathWithinRoot(path, root) {
+			delete(fw.watchedDirs, path)
 		}
 	}
 
