@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.3
+
+### Changes
+
+- Distinguish Linux auditd `CREATE` path records from writes to existing files while retaining the observed write-intent detail.
+- Expand live Linux auditd acceptance to arbitrary-name create, overwrite, rename, delete, and short-lived execution with actor identity checks.
+- Clarify tested Linux scope and the macOS Endpoint Security design and acceptance gates.
+
+### Limits
+
+- Linux auditd coverage depends on rules and log access configured on the host; event volume, rotation and permission loss, and other distributions still need live validation.
+- macOS process monitoring remains polling-based and may miss short-lived processes. File monitoring is limited to configured paths and does not identify the writer.
+- Vigilo reports observations; it does not block activity or prove an event is malicious.
+
 ## v0.2.2
 
 ### Changes
