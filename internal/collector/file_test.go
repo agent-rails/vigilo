@@ -773,3 +773,51 @@ func TestFileWatcherProcessesLargeSubtreeIncrementally(t *testing.T) {
 		t.Fatalf("reconciled %d files, want 300", got)
 	}
 }
+
+func TestFileWatcherCorrelatesSameDirectoryRenameAndCreate(t *testing.T) {
+	root := t.TempDir()
+	events := make(chan Event, 8)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	now := time.Now()
+	source := filepath.Join(root, "wallet.json.tmp")
+	target := filepath.Join(root, "wallet.json")
+	watcher.holdRename(source, now)
+	detail := watcher.correlateSameDirectoryRename(target, now.Add(50*time.Millisecond))
+	if !strings.Contains(detail, source) || !strings.Contains(detail, "cannot confirm the destination") {
+		t.Fatalf("correlation detail does not preserve uncertainty and source path: %q", detail)
+	}
+	if len(watcher.pendingRename) != 0 {
+		t.Fatalf("correlated rename remains pending: %+v", watcher.pendingRename)
+	}
+}
+
+func TestFileWatcherUnmatchedRenameIsReportedAfterCorrelationWindow(t *testing.T) {
+	root := t.TempDir()
+	events := make(chan Event, 8)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	source := filepath.Join(root, "wallet.json")
+	now := time.Now()
+	watcher.holdRename(source, now)
+	watcher.flushExpiredRenames(now.Add(renameMatchWindow))
+	select {
+	case event := <-events:
+		if event.Action != "rename" || event.Resource != source {
+			t.Fatalf("event = %+v, want rename on source path", event)
+		}
+		if !strings.Contains(event.Detail, "destination unknown") {
+			t.Fatalf("rename event should disclose its ambiguity: %q", event.Detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unmatched rename was not reported")
+	}
+}

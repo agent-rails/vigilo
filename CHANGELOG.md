@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.4
+
+### Changes
+
+- Correlate a same-directory file create with a preceding rename for clearer atomic-save alerts. The detail identifies the source and states that the relationship is inferred because filesystem providers do not expose a destination or rename cookie.
+- Process new directory subtrees incrementally and report files found during registration as `reconciled_present` rather than guessing at operations that may have been missed.
+- Simplify the personal-machine setup guide and include rename uncertainty in Slack notifications.
+
+### Limits
+
+- Same-directory rename correlation is heuristic; unrelated operations can be grouped, and events lost before collection cannot be reconstructed.
+- File monitoring remains limited to configured paths. Linux auditd and macOS process-observation limits remain as described in the monitoring documentation.
+
 ## v0.2.3
 
 ### Changes

@@ -12,6 +12,7 @@ func TestSlackUsesPlainTextForUntrustedEventFields(t *testing.T) {
 	payload := slackPayload(collector.Event{
 		Source: collector.SourceFile, Severity: collector.SeverityHigh,
 		Action: "write", Resource: "</code>\n@here `injected`", Process: "tool<admin>",
+		Detail: "possible atomic replacement; destination unknown",
 	})
 	if _, err := json.Marshal(payload); err != nil {
 		t.Fatalf("payload not JSON-safe: %v", err)
@@ -23,6 +24,9 @@ func TestSlackUsesPlainTextForUntrustedEventFields(t *testing.T) {
 	}
 	if strings.Contains(blockText["text"].(string), "\n@here") {
 		t.Fatal("newline in event field was not neutralized")
+	}
+	if !strings.Contains(blockText["text"].(string), "Detail: possible atomic replacement; destination unknown") {
+		t.Fatal("event detail missing from Slack notification")
 	}
 }
 
