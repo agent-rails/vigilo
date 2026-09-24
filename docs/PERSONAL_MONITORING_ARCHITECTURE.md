@@ -24,6 +24,10 @@ The target event-driven provider is Apple Endpoint Security for execution events
 
 Until that distribution path is available and tested, retain configured-root filesystem notifications and process polling only as an explicitly degraded fallback. It cannot claim short-lived execution coverage or reliable process-to-file attribution. Do not silently describe the fallback as equivalent to Endpoint Security.
 
+For distribution, package a small native Endpoint Security system extension inside a signed host application. Keep the existing Go daemon unprivileged; it continues to own configuration, SQLite, notifications, and user-facing health. Do not elevate the Go daemon, which also exposes HTTP/MCP interfaces and handles alert credentials. The extension subscribes to notification events only and forwards bounded, allowlisted observations over authenticated local IPC. Validate message sizes and fields, verify the connecting peer, and make queue overflow and disconnection visible. The privileged component must enforce an approved scope ceiling; Go configuration may request or narrow file roots but cannot expand collection beyond that ceiling.
+
+The ES callback must copy only required fields and return promptly; persistence, network delivery, and recursive path work belong outside the callback. Use `event.exec.target` as the newly executed image, not the pre-exec `message.process`; preserve the audit token or `(PID, pidversion)` so PID reuse is distinguishable. Do not retain argv, environment variables, or file contents. Interpret open access with Endpoint Security's `FREAD`/`FWRITE` flags, but label it as read/write intent: an open alone does not prove bytes were read or written. A modified-close event is evidence of a close with a modification flag; a writable mapping alone is not proof that bytes changed. Keep these distinctions in event actions and detail.
+
 ## Event and health model
 
 Normalize provider observations into the existing event stream while adding provider identity and stable event semantics. An event should contain:
@@ -32,9 +36,9 @@ Normalize provider observations into the existing event stream while adding prov
 - actor identity when the provider supplies it: PID, parent PID, UID/user, process name, and executable path;
 - an indication of attribution confidence or unavailable identity, rather than implying that missing identity means no actor.
 
-Actions should distinguish execution, create, write, delete/remove, rename, and read where the provider can prove them. Do not label an `open` as a write without checking the access flags. Preserve arbitrary names and paths; heuristics may add a triage annotation but must not rewrite the underlying observation.
+Actions should distinguish execution, create, write, delete/remove, rename, read, and read/write intent where the provider can prove them. Do not label an `open` as an actual read or write; report the requested access flags. Do not label a writable memory map as a proven modification. Preserve rename source and destination when available. Preserve arbitrary names and paths; heuristics may add a triage annotation but must not rewrite the underlying observation.
 
-Expose per-provider state such as `starting`, `healthy`, `degraded`, `unavailable`, and `stopped`, together with configured scope, last successful event/read time, watched-root count, and counters for queue pressure, dropped events, parse failures, permission failures, and provider restarts. Startup logs and health/metrics endpoints should show effective coverage. A collector that cannot watch a requested root or read its event source must not report healthy coverage for it.
+Expose per-provider state such as `starting`, `healthy`, `degraded`, `unavailable`, and `stopped`, together with configured scope, last successful event/read time, watched-root count, and counters for kernel sequence gaps, queue pressure, dropped events, parse failures, permission failures, IPC disconnects, and provider restarts. Startup logs and health/metrics endpoints should show effective coverage. A collector that cannot watch a requested root or read its event source must not report healthy coverage for it. Recovery does not imply that missed events were reconstructed.
 
 ## Privacy, volume, and delivery
 
@@ -56,7 +60,7 @@ Harden audit parsing and tailing, add rule profiles for selected paths and execu
 
 ### Phase 3: macOS event-driven coverage
 
-Prototype the Endpoint Security client and distribution path before promising full macOS coverage. On a supported macOS release, test a signed/notarized install and consent flow, short-lived arbitrary-named execution, create/overwrite/rename/delete with actor identity where exposed, and provider loss or revoked permission. Until the entitlement and runtime gates pass, acceptance is limited to accurately reporting degraded fallback coverage.
+Prototype the Endpoint Security client and distribution path before promising full macOS coverage. Obtain the restricted Apple entitlement and the host application/system-extension signing setup. On a supported macOS release, test a signed/notarized install with system-extension activation approval and Full Disk Access/TCC consent, SIP enabled, startup after login/reboot, upgrade and uninstall, and short-lived arbitrary-named execution. Test selected-root create, overwrite, truncate, atomic replacement, rename across the scope boundary, unlink, and memory-mapped changes; assert actor identity and exact semantics where exposed. Prove argv, environment, and file-content canaries do not reach IPC, SQLite, logs, or alerts. Exercise permission denial/revocation, provider loss, reconnect, sequence gaps, malformed/oversized IPC, and queue saturation. Until entitlement, distribution, and runtime gates pass, acceptance is limited to accurately reporting degraded fallback coverage.
 
 ### Phase 4: shared user experience and resilience
 
@@ -70,6 +74,6 @@ Have a security architect review privilege boundaries, rule tampering, path/syml
 
 Linux runtime acceptance requires a host or disposable VM with audit support and permission to install and inspect audit rules; container parser tests alone do not prove kernel event coverage. Distribution coverage requires testing the supported architectures and audit implementations.
 
-macOS full coverage depends on Apple Endpoint Security entitlement approval, the signed/notarized extension or service packaging, and user consent on the supported OS versions. These gates cannot be established by a cross-compile or unit test. If they are not met, Vigilo must describe macOS execution coverage as polling-based and incomplete.
+macOS full coverage depends on Apple Endpoint Security entitlement approval, a host app and signed system extension, Developer ID signing/notarization, and user consent on supported OS versions. These gates cannot be established by a cross-compile, `eslogger`, or unit test. `eslogger` is for diagnostics rather than an application backend; its JSON is not a stable Vigilo interface. If the release gates are not met, Vigilo must describe macOS execution coverage as polling-based and incomplete.
 
 Neither provider protects against a compromised kernel or a sufficiently privileged attacker who can stop Vigilo, alter its configuration, or tamper with local event storage. Vigilo is an observation and notification tool; a missing event is not proof that no change occurred.
