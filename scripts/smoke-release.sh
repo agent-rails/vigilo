@@ -17,6 +17,14 @@ trap cleanup EXIT
 tar xzf "$ARCHIVE" -C "$SMOKE_DIR"
 test -x "$SMOKE_DIR/vigilo"
 test -f "$SMOKE_DIR/CHANGELOG.md"
+test -f "$SMOKE_DIR/config.personal.example.yaml"
+test -f "$SMOKE_DIR/deploy/user/install.sh"
+test -f "$SMOKE_DIR/deploy/user/vigilo.service"
+test -f "$SMOKE_DIR/deploy/user/run-vigilo.sh"
+test -f "$SMOKE_DIR/deploy/macos/install-launch-agent.py"
+sh -n "$SMOKE_DIR/deploy/user/install.sh"
+sh -n "$SMOKE_DIR/deploy/user/run-vigilo.sh"
+python3 "$SMOKE_DIR/deploy/macos/install-launch-agent.py" --help >/dev/null
 
 # Go must never be used by the binary installer, even if present on the runner.
 mkdir "$SMOKE_DIR/no-go"

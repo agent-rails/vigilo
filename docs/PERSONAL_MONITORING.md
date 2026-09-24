@@ -19,12 +19,13 @@ When the optional web server is enabled, `/healthz` reports daemon liveness sepa
 - `go test ./... -count=1` passed on the macOS development host and in a Linux Go 1.26 container.
 - Linux amd64 and macOS arm64 builds passed.
 - Linux auditd parser/tailer tests cover arbitrary paths, actor context, timestamps, open read/write classification, encoded values, relative paths, script/interpreter identity, incomplete groups, append-after-EOF, and replacement-inode rotation. These use synthetic audit records and temporary files.
-- Filesystem tests cover direct files across atomic replacement, missing-root recovery, nested directories, and exclusions. Process tests cover PID/start-time/executable identity changes and parent lookup from one process snapshot.
-- No live auditd rule installation or Linux host event-volume test was performed. No macOS Endpoint Security entitlement, consent, signed package, or runtime test was performed.
+- Filesystem tests cover direct files across atomic replacement, missing-root recovery, nested directories, and exclusions. Process tests cover live process observation on macOS/Linux, PID/start-time/executable identity changes, and parent lookup from one process snapshot.
+- The CI release smoke test installs the archive and verifies systemd startup and alert delivery. The live auditd job installs temporary file and execution rules on an ephemeral Linux runner and checks actor identity. It does not measure sustained event volume or cover a distribution matrix.
+- No macOS Endpoint Security entitlement, consent, signed package, or runtime test was performed; macOS execution coverage remains polling-based.
 
 ## Remaining external gates
 
-1. Validate audit rules, write/read semantics, rotation, permission loss, and event volume on supported Linux distributions and architectures with host audit support.
+1. Extend live auditd acceptance beyond the Ubuntu CI runner: validate read/write semantics, rotation, permission loss, event volume, and supported Linux distributions/architectures.
 2. Obtain Apple's Endpoint Security entitlement and build/test the signed, consented macOS provider. Until then, macOS execution observation remains polling-based and can miss short-lived processes.
 3. Run a release-candidate host test for actual writes and executions under the documented selected paths, including provider loss and notification delivery.
 

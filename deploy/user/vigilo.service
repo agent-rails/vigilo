@@ -1,0 +1,15 @@
+[Unit]
+Description=Vigilo Personal Security Monitor
+After=default.target
+
+[Service]
+Type=simple
+Environment=VIGILO_HOME=%h
+ExecStart=%h/.local/libexec/vigilo-run
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

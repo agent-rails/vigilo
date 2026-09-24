@@ -1,0 +1,22 @@
+# Personal, login-user configuration for Linux and macOS.
+# Remove paths that do not exist and add project directories before running
+# untrusted code there. Vigilo watches only the paths listed here.
+watch_paths:
+  - ~/Downloads
+  - ~/Documents
+  # Linux examples: ~/.config/autostart, ~/.local/bin
+  # macOS example: ~/Library/LaunchAgents
+  # Example assessment checkout: ~/src/job-assessment
+
+process_monitor:
+  enabled: true
+  report_new_processes: true
+
+# Report each observed change; reduce noise by raising source thresholds.
+signal_cooldown: 0s
+
+alerter:
+  min_severity: high
+  min_severity_by_source:
+    file_access: info
+    process: info

@@ -8,36 +8,33 @@ The default file watcher does not detect reads or identify which process changed
 
 For a personal machine, run Vigilo as the account whose files you want to monitor. The system-wide Linux service runs as the separate `vigilo` user and usually cannot read a private home directory. Granting it access is a deliberate permissions change; running as your login user avoids that extra access rule.
 
-Download and extract the archive for your OS and CPU from [Releases](https://github.com/agent-rails/vigilo/releases). Then create `~/.config/vigilo/config.yaml`. Use paths that exist on your machine and a notification threshold for ordinary file changes:
-
-```yaml
-watch_paths:
-  - ~/Downloads
-  - ~/Documents
-  # Add the exact checkout before running untrusted project code, for example:
-  # - ~/src/job-assessment
-  # Linux examples: ~/.config/autostart, ~/.local/bin
-  # macOS example: ~/Library/LaunchAgents
-
-process_monitor:
-  enabled: true
-  report_new_processes: true # inventory every process first seen by polling; can be noisy
-
-alerter:
-  min_severity: high
-  min_severity_by_source:
-    file_access: info # sends alerts for every observed change under watch_paths
-    process: info      # sends every first-seen process; expect frequent notifications
-```
-
-Configure at least one alert channel before expecting notifications. For Slack, set `VIGILO_SLACK_WEBHOOK_URL` in your environment; other channel settings are in [`config.example.yaml`](config.example.yaml). Then start Vigilo from the extracted release directory:
+Download and extract the archive for your OS and CPU from [Releases](https://github.com/agent-rails/vigilo/releases). Run the personal installer as your login user (without `sudo`):
 
 ```bash
-mkdir -p "$HOME/.config/vigilo" "$HOME/.local/share/vigilo"
-./vigilo -config "$HOME/.config/vigilo/config.yaml" -db "$HOME/.local/share/vigilo/events.db"
+bash deploy/user/install.sh
 ```
 
-Use real paths with the required read permissions. Remove any example path that does not exist; Vigilo reports missing roots as degraded coverage. Before `npm install` or another untrusted assessment, add that project's checkout to `watch_paths`; Vigilo only watches the paths you configure. The file watcher reports changes but does not identify the writer. Linux auditd can add event-driven process and file attribution when matching host rules are installed; macOS currently uses polling for processes. Process inventory reports every process first seen by polling, so expect frequent notifications; polling can miss short-lived processes. See [personal monitoring coverage](docs/PERSONAL_MONITORING.md).
+The installer copies the binary, a personal config template, and a per-user startup service. Edit `~/.config/vigilo/config.yaml` before starting: remove any path that does not exist and add your source checkout (for example `~/src/job-assessment`) before running untrusted code there. Vigilo watches only configured paths; the file watcher reports changes but does not identify the writer. The template enables alerts for every observed file change and every process first seen by polling, so notifications can be frequent. Polling can miss short-lived processes.
+
+To configure Slack notifications, add this line to `~/.config/vigilo/env` and replace the example URL:
+
+```sh
+VIGILO_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+The environment file is created with owner-only permissions. Other alert channels and settings are in [`config.example.yaml`](config.example.yaml). Start Vigilo in your user session:
+
+```bash
+# Linux with systemd --user
+systemctl --user enable --now vigilo.service
+journalctl --user -u vigilo -f
+
+# macOS with launchd (run these instead of the Linux commands)
+python3 deploy/macos/install-launch-agent.py --start
+tail -f "$HOME/Library/Logs/Vigilo/stderr.log"
+```
+
+On Linux, `sudo loginctl enable-linger "$USER"` keeps the user service running after logout. The macOS installer keeps the LaunchAgent disabled until you run `--start`, then it starts now and at login. Stop it with `systemctl --user disable --now vigilo.service` on Linux or run the LaunchAgent installer with `--uninstall` on macOS. Linux auditd can add event-driven process and file attribution when matching host rules are installed; macOS currently uses polling for processes. See [personal monitoring coverage](docs/PERSONAL_MONITORING.md).
 
 ## System-wide Linux service
 
