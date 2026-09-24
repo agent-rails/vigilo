@@ -91,6 +91,11 @@ type auditGroup struct {
 	lastSeen time.Time
 }
 
+type auditPath struct {
+	name     string
+	nametype string
+}
+
 const (
 	maxAuditLineBytes = 1 << 20
 	maxAuditGroups    = 4096
@@ -353,7 +358,7 @@ func (aw *AuditdWatcher) emitGroup(g *auditGroup) {
 func eventsForAuditGroup(g *auditGroup) []Event {
 	// Collect SYSCALL and PATH records
 	var syscall auditRecord
-	var paths []string
+	var paths []auditPath
 	var key string
 	var cwd string
 	var hasExecveRecord bool
@@ -367,7 +372,7 @@ func eventsForAuditGroup(g *auditGroup) []Event {
 			// CWD/PARENT records are context, not the object operated on.
 			nametype := r.fields["nametype"]
 			if name := r.fields["name"]; name != "" && name != "(null)" && nametype != "CWD" && nametype != "PARENT" {
-				paths = append(paths, name)
+				paths = append(paths, auditPath{name: name, nametype: nametype})
 			}
 		case "CWD":
 			cwd = r.fields["cwd"]
@@ -411,8 +416,8 @@ func eventsForAuditGroup(g *auditGroup) []Event {
 		// Do not retain EXECVE argv fields: they commonly contain credentials.
 		resource := exe
 		for _, path := range paths {
-			if path != "" {
-				resource = resolveAuditPath(path, cwd, auditPathUsesCWD(syscall.fields["arch"], syscallNum, syscall.fields))
+			if path.name != "" {
+				resource = resolveAuditPath(path.name, cwd, auditPathUsesCWD(syscall.fields["arch"], syscallNum, syscall.fields))
 				break
 			}
 		}
@@ -433,8 +438,15 @@ func eventsForAuditGroup(g *auditGroup) []Event {
 
 	events := make([]Event, 0, len(paths))
 	for _, path := range paths {
-		path = resolveAuditPath(path, cwd, auditPathUsesCWD(syscall.fields["arch"], syscallNum, syscall.fields))
-		sev := severityForPath(path)
+		resource := resolveAuditPath(path.name, cwd, auditPathUsesCWD(syscall.fields["arch"], syscallNum, syscall.fields))
+		eventAction := action
+		if action == "write" && path.nametype == "CREATE" {
+			// PATH nametype=CREATE distinguishes a newly created object from a
+			// write-intent open of an existing file. Preserve that distinction
+			// for investigation; open flags alone only establish write intent.
+			eventAction = "create"
+		}
+		sev := severityForPath(resource)
 		if sev == SeverityInfo {
 			sev = SeverityMedium // auditd rules matched = at least medium
 		}
@@ -447,8 +459,8 @@ func eventsForAuditGroup(g *auditGroup) []Event {
 			Process:    comm,
 			Executable: exe,
 			User:       uid,
-			Action:     action,
-			Resource:   path,
+			Action:     eventAction,
+			Resource:   resource,
 			Detail:     "auditd rule=" + key + " access=" + access,
 			Severity:   sev,
 		}
