@@ -592,7 +592,7 @@ func (fw *FileWatcher) loop() {
 			// Files already present during watch registration are reported as
 			// reconciled_present; transient earlier operations cannot be inferred.
 			if event.Has(fsnotify.Create) && fw.isRelevant(event.Name) && !fw.isExcluded(event.Name) {
-				info, statErr := os.Stat(event.Name)
+				info, statErr := os.Lstat(event.Name)
 				if statErr != nil {
 					if !os.IsNotExist(statErr) {
 						for _, root := range fw.roots {

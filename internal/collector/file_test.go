@@ -972,3 +972,44 @@ func TestFileWatcherReportsRealWalkErrorInsteadOfSymlinkSummary(t *testing.T) {
 		t.Fatalf("the report must carry the walk error, not the symlink summary: %q", reports[0].Detail)
 	}
 }
+
+func TestFileWatcherDoesNotFollowDirectorySymlinkCreatedAfterStart(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "outside.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 64)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	link := filepath.Join(root, "newlink")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	created := false
+	deadline := time.After(time.Second)
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Resource == link && event.Action == "create" {
+				created = true
+			}
+			if strings.HasPrefix(event.Resource, link+string(filepath.Separator)) {
+				t.Fatalf("contents behind a symlink must not be scanned or reported: %+v", event)
+			}
+		case <-deadline:
+			collecting = false
+		}
+	}
+	if !created {
+		t.Fatal("creating the symlink itself must still be reported")
+	}
+}
