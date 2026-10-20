@@ -235,6 +235,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 		return nil // the containing directory is watched to survive atomic replacement
 	}
 	var firstErr error
+	var skippedLinks []string
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if firstErr == nil {
@@ -249,9 +250,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 			return nil
 		}
 		if d.Type()&os.ModeSymlink != 0 {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("symlink subtree is not followed: %s", path)
-			}
+			skippedLinks = append(skippedLinks, path)
 			return nil
 		}
 		if d.IsDir() {
@@ -267,7 +266,19 @@ func (fw *FileWatcher) addRecursive(root string) error {
 	if err != nil {
 		return err
 	}
+	if firstErr == nil && len(skippedLinks) > 0 {
+		fw.emitCoverageGap(root, "watch_subtree_symlink_skipped", symlinkSummary(skippedLinks))
+	}
 	return firstErr
+}
+
+func symlinkSummary(links []string) error {
+	const sample = 3
+	shown := links
+	if len(shown) > sample {
+		shown = shown[:sample]
+	}
+	return fmt.Errorf("%d symlinks are not followed, for example: %s", len(links), strings.Join(shown, ", "))
 }
 
 func (fw *FileWatcher) addDirectoryWatch(path string) error {

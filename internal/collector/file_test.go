@@ -821,3 +821,148 @@ func TestFileWatcherUnmatchedRenameIsReportedAfterCorrelationWindow(t *testing.T
 		t.Fatal("unmatched rename was not reported")
 	}
 }
+
+func TestFileWatcherKeepsRootWatchedWhenItContainsSymlink(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	if !watcher.rootState[normalizeWatchPath(root)] {
+		t.Fatal("root containing a symlink was marked unavailable; it would be retried and re-reported every reconcile tick")
+	}
+
+	skipped := 0
+	deadline := time.After(500 * time.Millisecond)
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Source != SourceHealth {
+				continue
+			}
+			if event.Action == "watch_start_failed" {
+				t.Fatalf("symlink inside the root must not fail the whole root: %+v", event)
+			}
+			if event.Action == "watch_subtree_symlink_skipped" && strings.Contains(event.Detail, link) {
+				skipped++
+			}
+		case <-deadline:
+			collecting = false
+		}
+	}
+	if skipped != 1 {
+		t.Fatalf("want exactly one skipped-symlink report for %s, got %d", link, skipped)
+	}
+
+	if err := os.WriteFile(filepath.Join(nested, "after.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Source != SourceFile || !strings.HasSuffix(event.Resource, "after.txt") {
+			t.Fatalf("unexpected event after symlink report: %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("file in a nested directory of a root with a symlink was not watched")
+	}
+}
+
+func TestFileWatcherSummarisesManySymlinksWithoutDroppingOtherRootFailure(t *testing.T) {
+	rootA := t.TempDir()
+	target := t.TempDir()
+	for i := 0; i < 600; i++ {
+		if err := os.Symlink(target, filepath.Join(rootA, fmt.Sprintf("link-%03d", i))); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	rootB := filepath.Join(t.TempDir(), "absent")
+	events := make(chan Event, 512)
+	watcher, err := NewFileWatcher([]string{rootA, rootB}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	summaries, rootBFailed := 0, false
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Source != SourceHealth {
+				continue
+			}
+			if event.Action == "watch_subtree_symlink_skipped" {
+				summaries++
+				if !strings.Contains(event.Detail, "600") {
+					t.Fatalf("summary should state the symlink count: %+v", event)
+				}
+			}
+			if event.Action == "watch_start_failed" && event.Resource == normalizeWatchPath(rootB) {
+				rootBFailed = true
+			}
+		default:
+			collecting = false
+		}
+	}
+	if summaries != 1 {
+		t.Fatalf("want one symlink summary for the root, got %d", summaries)
+	}
+	if !rootBFailed {
+		t.Fatal("startup failure of the second root was dropped after the first root reported its symlinks")
+	}
+}
+
+func TestFileWatcherReportsRealWalkErrorInsteadOfSymlinkSummary(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not apply to root")
+	}
+	root := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	var actions []string
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Source == SourceHealth {
+				actions = append(actions, event.Action)
+			}
+		default:
+			collecting = false
+		}
+	}
+	if len(actions) != 1 || actions[0] != "watch_start_failed" {
+		t.Fatalf("a real walk error must be the only startup report for the root, got %v", actions)
+	}
+}
