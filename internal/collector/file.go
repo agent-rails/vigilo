@@ -558,8 +558,8 @@ func (fw *FileWatcher) loop() {
 						fw.rootState[root] = false
 						fw.emitCoverageGap(root, "watch_root_removed", nil)
 					} else if event.Has(fsnotify.Create) {
-						if _, err := os.Stat(root); err == nil {
-							fw.rootState[root] = true
+						if err := fw.watchRoot(root); err != nil {
+							fw.emitCoverageGap(root, "watch_root_unavailable", err)
 						}
 					}
 				}
@@ -604,7 +604,7 @@ func (fw *FileWatcher) loop() {
 					}
 				} else if info.IsDir() {
 					_ = fw.enqueueSubtreeScan(fw.rootForPath(event.Name), event.Name)
-				} else {
+				} else if info.Mode().IsRegular() {
 					// A same-directory rename followed by a create is common for
 					// atomic saves. Preserve the evidence on the create event and
 					// avoid a second, misleading terminal rename alert.
