@@ -139,7 +139,7 @@ func (pw *ProcessWatcher) checkProcess(p procInfo, processes map[int]procInfo) b
 		return true
 	}
 	if severity, parent, matched := parentChildSignal(p, processes); matched {
-		pw.emitProcess(p, severity, "spawn", fmt.Sprintf("suspicious child of %s", parent))
+		pw.emitProcess(p, severity, "spawn", suspiciousChildDetail(parent))
 		return true
 	}
 	return false

@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,7 +44,7 @@ func TestParentChildSignalUsesCurrentSnapshot(t *testing.T) {
 		101: {pid: 101, ppid: 100, name: "bash", executable: "/bin/bash"},
 	}
 	severity, parent, ok := parentChildSignal(processes[101], processes)
-	if !ok || severity != SeverityCritical || parent != "node" {
+	if !ok || severity != SeverityCritical || parent.name != "node" {
 		t.Fatalf("parent created in the same scan was not considered: %q %q %v", severity, parent, ok)
 	}
 	out := make(chan Event, 1)
@@ -64,6 +65,50 @@ func TestObservedProcessEventKeepsExecutableButNotCommandLine(t *testing.T) {
 	event := <-out
 	if event.Executable != "/tmp/systemupdate" || event.Resource != "/tmp/systemupdate" {
 		t.Fatalf("executable context lost: %+v", event)
+	}
+	if event.CmdLine != "" {
+		t.Fatalf("process event must not retain command-line arguments: %+v", event)
+	}
+}
+
+func TestSuspiciousChildDetail(t *testing.T) {
+	long := "/" + strings.Repeat("a", 600)
+	tests := []struct {
+		name   string
+		parent procInfo
+		want   string
+	}{
+		{"names pid and executable", procInfo{pid: 100, name: "python", executable: "/work/proj/.venv/bin/python"},
+			"suspicious child of python (parent pid 100, /work/proj/.venv/bin/python)"},
+		{"unknown executable", procInfo{pid: 100, name: "python"},
+			"suspicious child of python (parent pid 100, executable unavailable)"},
+		{"control characters replaced", procInfo{pid: 7, name: "node", executable: "/tmp/x\nFAKE: all clear\x1b[31m/node"},
+			"suspicious child of node (parent pid 7, /tmp/x?FAKE: all clear?[31m/node)"},
+		{"long path truncated", procInfo{pid: 9, name: "python3", executable: long},
+			"suspicious child of python3 (parent pid 9, " + long[:256] + "...)"},
+	}
+	for _, tt := range tests {
+		if got := suspiciousChildDetail(tt.parent); got != tt.want {
+			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestSuspiciousChildEventNamesTheParentProcess(t *testing.T) {
+	processes := map[int]procInfo{
+		100: {pid: 100, name: "python", executable: "/work/proj/.venv/bin/python"},
+		101: {pid: 101, ppid: 100, name: "bash", executable: "/bin/bash"},
+	}
+	out := make(chan Event, 1)
+	watcher := NewProcessWatcher(time.Second, out, nil, false)
+	if !watcher.checkProcess(processes[101], processes) {
+		t.Fatal("child of python was not classified")
+	}
+	event := <-out
+	for _, want := range []string{"suspicious child of python", "pid 100", "/work/proj/.venv/bin/python"} {
+		if !strings.Contains(event.Detail, want) {
+			t.Fatalf("detail %q does not contain %q", event.Detail, want)
+		}
 	}
 	if event.CmdLine != "" {
 		t.Fatalf("process event must not retain command-line arguments: %+v", event)
