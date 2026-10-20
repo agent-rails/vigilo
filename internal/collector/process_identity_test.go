@@ -148,3 +148,11 @@ func TestParentChildSignalMatchesInterpreterNamesAsReportedByTheOS(t *testing.T)
 		}
 	}
 }
+
+func TestSuspiciousChildrenKeysAreNormalised(t *testing.T) {
+	for key := range suspiciousChildren {
+		if interpreterKey(key) != key {
+			t.Errorf("key %q is unreachable: lookups use %q", key, interpreterKey(key))
+		}
+	}
+}
