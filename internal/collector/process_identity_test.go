@@ -120,3 +120,31 @@ func TestSuspiciousChildEventNamesTheParentProcess(t *testing.T) {
 		t.Fatalf("process event must not retain command-line arguments: %+v", event)
 	}
 }
+
+func TestParentChildSignalMatchesInterpreterNamesAsReportedByTheOS(t *testing.T) {
+	tests := []struct {
+		parent string
+		want   bool
+	}{
+		{"python", true},
+		{"python3", true},
+		{"Python", true},
+		{"python3.13", true},
+		{"python3.12", true},
+		{"pythonic", false},
+		{"python-config", false},
+		{"cpython", false},
+		{"node", true},
+		{"nodemon", false},
+	}
+	for _, tt := range tests {
+		processes := map[int]procInfo{
+			100: {pid: 100, name: tt.parent, executable: "/opt/" + tt.parent},
+			101: {pid: 101, ppid: 100, name: "bash", executable: "/bin/bash"},
+		}
+		_, _, got := parentChildSignal(processes[101], processes)
+		if got != tt.want {
+			t.Errorf("parent %q: matched = %v, want %v", tt.parent, got, tt.want)
+		}
+	}
+}
