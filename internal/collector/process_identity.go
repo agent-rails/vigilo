@@ -1,9 +1,11 @@
 package collector
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // suspiciousIdentity flags common OS-looking process names when they execute
@@ -47,16 +49,16 @@ func changedProcesses(previous, current map[int]procInfo) []procInfo {
 	return changed
 }
 
-func parentChildSignal(child procInfo, processes map[int]procInfo) (Severity, string, bool) {
+func parentChildSignal(child procInfo, processes map[int]procInfo) (Severity, procInfo, bool) {
 	parent, ok := processes[child.ppid]
 	if !ok {
-		return "", "", false
+		return "", procInfo{}, false
 	}
 	parentName := filepath.Base(parent.name)
 	childName := filepath.Base(child.name)
 	suspicious, ok := suspiciousChildren[parentName]
 	if !ok {
-		return "", "", false
+		return "", procInfo{}, false
 	}
 	for _, name := range suspicious {
 		if strings.HasPrefix(childName, name) {
@@ -64,8 +66,34 @@ func parentChildSignal(child procInfo, processes map[int]procInfo) (Severity, st
 			if childName == "sh" || childName == "bash" {
 				severity = SeverityCritical
 			}
-			return severity, parentName, true
+			return severity, parent, true
 		}
 	}
-	return "", "", false
+	return "", procInfo{}, false
+}
+
+const parentPathMaxRunes = 256
+
+func suspiciousChildDetail(parent procInfo) string {
+	return fmt.Sprintf("suspicious child of %s (parent pid %d, %s)", filepath.Base(parent.name), parent.pid, displayPath(parent.executable))
+}
+
+func displayPath(path string) string {
+	if path == "" {
+		return "executable unavailable"
+	}
+	runes := []rune(path)
+	truncated := len(runes) > parentPathMaxRunes
+	if truncated {
+		runes = runes[:parentPathMaxRunes]
+	}
+	for i, r := range runes {
+		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
+			runes[i] = '?'
+		}
+	}
+	if truncated {
+		return string(runes) + "..."
+	}
+	return string(runes)
 }
