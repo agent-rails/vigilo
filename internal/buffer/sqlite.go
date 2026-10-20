@@ -59,7 +59,9 @@ func checkDatabasePath(path string) error {
 	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
 		return nil
 	}
-	path, _, _ = strings.Cut(path, "?")
+	if i := strings.IndexByte(path, '?'); i >= 1 {
+		path = path[:i]
+	}
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		return fmt.Errorf("cannot open database %q: path is a directory", path)
 	}

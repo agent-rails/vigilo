@@ -296,3 +296,10 @@ func TestOpenIgnoresQueryStringWhenCheckingPath(t *testing.T) {
 		t.Fatalf("an existing directory followed by a query must be reported as a directory, got: %v", err)
 	}
 }
+
+func TestOpenTreatsLeadingQuestionMarkAsPartOfPath(t *testing.T) {
+	_, err := buffer.Open("?absent/events.db", 24)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("a leading '?' is part of the path, as in the driver, got: %v", err)
+	}
+}
