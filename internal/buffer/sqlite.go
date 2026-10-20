@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/voltagebots/vigilo/internal/collector"
@@ -52,7 +55,32 @@ type Store struct {
 	retentionHours int
 }
 
+func checkDatabasePath(path string) error {
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return nil
+	}
+	path, _, _ = strings.Cut(path, "?")
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return fmt.Errorf("cannot open database %q: path is a directory", path)
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("cannot open database %q: directory %q does not exist: %w", path, dir, err)
+	}
+	if err != nil {
+		return fmt.Errorf("cannot open database %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cannot open database %q: %q is not a directory", path, dir)
+	}
+	return nil
+}
+
 func Open(path string, retentionHours int) (*Store, error) {
+	if err := checkDatabasePath(path); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -62,9 +90,11 @@ func Open(path string, retentionHours int) (*Store, error) {
 	db.SetMaxIdleConns(1)
 
 	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
+		db.Close()
+		return nil, fmt.Errorf("migrate %q: %w", path, err)
 	}
 	if err := ensureColumn(db, "events", "executable"); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("migrate executable column: %w", err)
 	}
 	s := &Store{db: db, retentionHours: retentionHours}

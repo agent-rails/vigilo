@@ -2,7 +2,11 @@ package buffer_test
 
 import (
 	"database/sql"
+	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,5 +248,51 @@ func TestMultipleSourceFilter(t *testing.T) {
 	}
 	if len(both) != 2 {
 		t.Errorf("expected 2 events, got %d", len(both))
+	}
+}
+
+func TestOpenReportsMissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent", "events.db")
+	_, err := buffer.Open(path, 24)
+	if err == nil {
+		t.Fatal("expected an error for a database in a missing directory")
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("error should name the path and the missing directory, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "out of memory") {
+		t.Fatalf("error should not report a memory failure: %v", err)
+	}
+}
+
+func TestOpenReportsDirectoryAsDatabasePath(t *testing.T) {
+	path := t.TempDir()
+	_, err := buffer.Open(path, 24)
+	if err == nil {
+		t.Fatal("expected an error when the database path is a directory")
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("error should name the path and say it is a directory, got: %v", err)
+	}
+}
+
+func TestOpenKeepsCauseOfMissingDirectory(t *testing.T) {
+	_, err := buffer.Open(filepath.Join(t.TempDir(), "absent", "events.db"), 24)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("error should unwrap to fs.ErrNotExist, got: %v", err)
+	}
+}
+
+func TestOpenIgnoresQueryStringWhenCheckingPath(t *testing.T) {
+	dir := t.TempDir()
+	store, err := buffer.Open(filepath.Join(dir, "events.db")+"?_unknown=x/y", 24)
+	if err != nil {
+		t.Fatalf("a query value containing a slash must not be read as a directory: %v", err)
+	}
+	store.Close()
+
+	_, err = buffer.Open(dir+"?_pragma=busy_timeout(1000)", 24)
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("an existing directory followed by a query must be reported as a directory, got: %v", err)
 	}
 }
