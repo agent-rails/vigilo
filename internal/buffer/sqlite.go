@@ -85,7 +85,7 @@ const sqliteCantOpen = 14
 func migrateError(path string, err error) error {
 	var sqlErr *sqlite.Error
 	if errors.As(err, &sqlErr) && sqlErr.Code()&0xff == sqliteCantOpen {
-		return fmt.Errorf("migrate %q: %w (SQLite cannot open or create the file; check that its directory exists and is writable)", path, err)
+		return fmt.Errorf("migrate %q: SQLite cannot open or create the file; check the path and that the file and its directory are readable and writable: %w", path, err)
 	}
 	return fmt.Errorf("migrate %q: %w", path, err)
 }
