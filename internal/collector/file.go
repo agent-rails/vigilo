@@ -235,6 +235,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 		return nil // the containing directory is watched to survive atomic replacement
 	}
 	var firstErr error
+	var skippedLinks []string
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if firstErr == nil {
@@ -249,9 +250,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 			return nil
 		}
 		if d.Type()&os.ModeSymlink != 0 {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("symlink subtree is not followed: %s", path)
-			}
+			skippedLinks = append(skippedLinks, path)
 			return nil
 		}
 		if d.IsDir() {
@@ -267,7 +266,19 @@ func (fw *FileWatcher) addRecursive(root string) error {
 	if err != nil {
 		return err
 	}
+	if firstErr == nil && len(skippedLinks) > 0 {
+		fw.emitCoverage(root, "watch_subtree_symlink_skipped", symlinkSummary(skippedLinks), SeverityMedium)
+	}
 	return firstErr
+}
+
+func symlinkSummary(links []string) error {
+	const sample = 3
+	shown := links
+	if len(shown) > sample {
+		shown = shown[:sample]
+	}
+	return fmt.Errorf("%d symlinks are not followed, for example: %s", len(links), strings.Join(shown, ", "))
 }
 
 func (fw *FileWatcher) addDirectoryWatch(path string) error {
@@ -345,8 +356,8 @@ func (fw *FileWatcher) processSubtreeScanBatch() {
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			fw.emitCoverageGap(task.root, "watch_subtree_symlink_skipped",
-				fmt.Errorf("symlink subtree is not followed: %s", path))
+			fw.emitCoverage(task.root, "watch_subtree_symlink_skipped",
+				fmt.Errorf("symlink subtree is not followed: %s", path), SeverityMedium)
 			continue
 		}
 		if entry.IsDir() {
@@ -547,8 +558,8 @@ func (fw *FileWatcher) loop() {
 						fw.rootState[root] = false
 						fw.emitCoverageGap(root, "watch_root_removed", nil)
 					} else if event.Has(fsnotify.Create) {
-						if _, err := os.Stat(root); err == nil {
-							fw.rootState[root] = true
+						if err := fw.watchRoot(root); err != nil {
+							fw.emitCoverageGap(root, "watch_root_unavailable", err)
 						}
 					}
 				}
@@ -581,7 +592,7 @@ func (fw *FileWatcher) loop() {
 			// Files already present during watch registration are reported as
 			// reconciled_present; transient earlier operations cannot be inferred.
 			if event.Has(fsnotify.Create) && fw.isRelevant(event.Name) && !fw.isExcluded(event.Name) {
-				info, statErr := os.Stat(event.Name)
+				info, statErr := os.Lstat(event.Name)
 				if statErr != nil {
 					if !os.IsNotExist(statErr) {
 						for _, root := range fw.roots {
@@ -593,7 +604,7 @@ func (fw *FileWatcher) loop() {
 					}
 				} else if info.IsDir() {
 					_ = fw.enqueueSubtreeScan(fw.rootForPath(event.Name), event.Name)
-				} else {
+				} else if info.Mode().IsRegular() {
 					// A same-directory rename followed by a create is common for
 					// atomic saves. Preserve the evidence on the create event and
 					// avoid a second, misleading terminal rename alert.
@@ -736,11 +747,15 @@ func (fw *FileWatcher) reconcileParentWatches() {
 }
 
 func (fw *FileWatcher) emitCoverageGap(path, action string, cause error) {
+	fw.emitCoverage(path, action, cause, SeverityHigh)
+}
+
+func (fw *FileWatcher) emitCoverage(path, action string, cause error, severity Severity) {
 	detail := "file watcher coverage is incomplete"
 	if cause != nil {
 		detail += ": " + cause.Error()
 	}
-	e := Event{Source: SourceHealth, Timestamp: time.Now(), Action: action, Resource: path, Detail: detail, Severity: SeverityHigh}
+	e := Event{Source: SourceHealth, Timestamp: time.Now(), Action: action, Resource: path, Detail: detail, Severity: severity}
 	// Health reporting must never stall the filesystem event loop. The warning
 	// remains visible in the daemon log if the shared event bus is saturated.
 	select {

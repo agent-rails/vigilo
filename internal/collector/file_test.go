@@ -821,3 +821,312 @@ func TestFileWatcherUnmatchedRenameIsReportedAfterCorrelationWindow(t *testing.T
 		t.Fatal("unmatched rename was not reported")
 	}
 }
+
+func TestFileWatcherKeepsRootWatchedWhenItContainsSymlink(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	if !watcher.rootState[normalizeWatchPath(root)] {
+		t.Fatal("root containing a symlink was marked unavailable; it would be retried and re-reported every reconcile tick")
+	}
+
+	skipped := 0
+	deadline := time.After(500 * time.Millisecond)
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Source != SourceHealth {
+				continue
+			}
+			if event.Action == "watch_start_failed" {
+				t.Fatalf("symlink inside the root must not fail the whole root: %+v", event)
+			}
+			if event.Action == "watch_subtree_symlink_skipped" && strings.Contains(event.Detail, link) {
+				skipped++
+				if event.Severity != SeverityMedium {
+					t.Fatalf("a skipped symlink is not a failure and must stay below the default alert threshold, got %s", event.Severity)
+				}
+			}
+		case <-deadline:
+			collecting = false
+		}
+	}
+	if skipped != 1 {
+		t.Fatalf("want exactly one skipped-symlink report for %s, got %d", link, skipped)
+	}
+
+	if err := os.WriteFile(filepath.Join(nested, "after.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Source != SourceFile || !strings.HasSuffix(event.Resource, "after.txt") {
+			t.Fatalf("unexpected event after symlink report: %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("file in a nested directory of a root with a symlink was not watched")
+	}
+}
+
+func TestFileWatcherSummarisesManySymlinksWithoutDroppingOtherRootFailure(t *testing.T) {
+	rootA := t.TempDir()
+	target := t.TempDir()
+	for i := 0; i < 600; i++ {
+		if err := os.Symlink(target, filepath.Join(rootA, fmt.Sprintf("link-%03d", i))); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	rootB := filepath.Join(t.TempDir(), "absent")
+	events := make(chan Event, 512)
+	watcher, err := NewFileWatcher([]string{rootA, rootB}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	summaries, rootBFailed := 0, false
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Source != SourceHealth {
+				continue
+			}
+			if event.Action == "watch_subtree_symlink_skipped" {
+				summaries++
+				if !strings.Contains(event.Detail, "600") {
+					t.Fatalf("summary should state the symlink count: %+v", event)
+				}
+			}
+			if event.Action == "watch_start_failed" && event.Resource == normalizeWatchPath(rootB) {
+				rootBFailed = true
+			}
+		default:
+			collecting = false
+		}
+	}
+	if summaries != 1 {
+		t.Fatalf("want one symlink summary for the root, got %d", summaries)
+	}
+	if !rootBFailed {
+		t.Fatal("startup failure of the second root was dropped after the first root reported its symlinks")
+	}
+}
+
+func TestFileWatcherReportsRealWalkErrorInsteadOfSymlinkSummary(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not apply to root")
+	}
+	root := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	events := make(chan Event, 16)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	var reports []Event
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Source == SourceHealth {
+				reports = append(reports, event)
+			}
+		default:
+			collecting = false
+		}
+	}
+	if len(reports) != 1 || reports[0].Action != "watch_start_failed" {
+		t.Fatalf("a real walk error must be the only startup report for the root, got %+v", reports)
+	}
+	if !strings.Contains(reports[0].Detail, "permission denied") || strings.Contains(reports[0].Detail, "symlink") {
+		t.Fatalf("the report must carry the walk error, not the symlink summary: %q", reports[0].Detail)
+	}
+}
+
+func TestFileWatcherDoesNotFollowDirectorySymlinkCreatedAfterStart(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "outside.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 64)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	link := filepath.Join(root, "newlink")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	created := false
+	deadline := time.After(time.Second)
+	for collecting := true; collecting; {
+		select {
+		case event := <-events:
+			if event.Resource == link && event.Action == "create" {
+				created = true
+			}
+			if strings.HasPrefix(event.Resource, link+string(filepath.Separator)) {
+				t.Fatalf("contents behind a symlink must not be scanned or reported: %+v", event)
+			}
+		case <-deadline:
+			collecting = false
+		}
+	}
+	if !created {
+		t.Fatal("creating the symlink itself must still be reported")
+	}
+}
+
+func collectEvents(events <-chan Event, d time.Duration) []Event {
+	var got []Event
+	deadline := time.After(d)
+	for {
+		select {
+		case event := <-events:
+			got = append(got, event)
+		case <-deadline:
+			return got
+		}
+	}
+}
+
+func TestFileWatcherDirectorySymlinkCreateDoesNotAbsorbRename(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(root, "id_rsa")
+	if err := os.WriteFile(secret, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 64)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	if err := os.Rename(secret, filepath.Join(outside, "id_rsa")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	renamed := false
+	for _, event := range collectEvents(events, time.Second) {
+		if event.Action == "rename" && event.Resource == secret {
+			renamed = true
+		}
+		if event.Action == "create" && strings.Contains(event.Detail, "same-directory rename") {
+			t.Fatalf("a directory symlink must not absorb an unrelated rename: %+v", event)
+		}
+	}
+	if !renamed {
+		t.Fatal("the rename of a sensitive file must still be reported")
+	}
+}
+
+func TestFileWatcherReportsRootRecreatedAsSymlink(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 64)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), root); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	for _, event := range collectEvents(events, time.Second) {
+		if event.Source == SourceHealth && event.Action == "watch_root_unavailable" && event.Severity == SeverityHigh {
+			return
+		}
+	}
+	t.Fatal("a root recreated as a symlink must be reported as unavailable, not treated as healthy")
+}
+
+func TestFileWatcherReportsSymlinkInMovedInSubtreeAtMediumSeverity(t *testing.T) {
+	root := t.TempDir()
+	incoming := filepath.Join(t.TempDir(), "incoming")
+	if err := os.Mkdir(incoming, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(incoming, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	events := make(chan Event, 64)
+	watcher, err := NewFileWatcher([]string{root}, nil, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Stop()
+
+	if err := os.Rename(incoming, filepath.Join(root, "incoming")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, event := range collectEvents(events, time.Second) {
+		if event.Action == "watch_subtree_symlink_skipped" {
+			if event.Severity != SeverityMedium {
+				t.Fatalf("a symlink in a moved-in subtree must be medium, got %s", event.Severity)
+			}
+			return
+		}
+	}
+	t.Fatal("expected a watch_subtree_symlink_skipped event for the moved-in subtree")
+}
