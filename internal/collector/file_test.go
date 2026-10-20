@@ -951,18 +951,21 @@ func TestFileWatcherReportsRealWalkErrorInsteadOfSymlinkSummary(t *testing.T) {
 	}
 	defer watcher.Stop()
 
-	var actions []string
+	var reports []Event
 	for collecting := true; collecting; {
 		select {
 		case event := <-events:
 			if event.Source == SourceHealth {
-				actions = append(actions, event.Action)
+				reports = append(reports, event)
 			}
 		default:
 			collecting = false
 		}
 	}
-	if len(actions) != 1 || actions[0] != "watch_start_failed" {
-		t.Fatalf("a real walk error must be the only startup report for the root, got %v", actions)
+	if len(reports) != 1 || reports[0].Action != "watch_start_failed" {
+		t.Fatalf("a real walk error must be the only startup report for the root, got %+v", reports)
+	}
+	if !strings.Contains(reports[0].Detail, "permission denied") || strings.Contains(reports[0].Detail, "symlink") {
+		t.Fatalf("the report must carry the walk error, not the symlink summary: %q", reports[0].Detail)
 	}
 }
