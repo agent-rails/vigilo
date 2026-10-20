@@ -6,6 +6,7 @@ package buffer
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,7 +15,7 @@ import (
 	"time"
 
 	"github.com/voltagebots/vigilo/internal/collector"
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 const schema = `
@@ -79,6 +80,16 @@ func checkDatabasePath(path string) error {
 	return nil
 }
 
+const sqliteCantOpen = 14
+
+func migrateError(path string, err error) error {
+	var sqlErr *sqlite.Error
+	if errors.As(err, &sqlErr) && sqlErr.Code()&0xff == sqliteCantOpen {
+		return fmt.Errorf("migrate %q: SQLite cannot open or create the file; check the path and that the file and its directory are readable and writable: %w", path, err)
+	}
+	return fmt.Errorf("migrate %q: %w", path, err)
+}
+
 func Open(path string, retentionHours int) (*Store, error) {
 	if err := checkDatabasePath(path); err != nil {
 		return nil, err
@@ -93,7 +104,7 @@ func Open(path string, retentionHours int) (*Store, error) {
 
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate %q: %w", path, err)
+		return nil, migrateError(path, err)
 	}
 	if err := ensureColumn(db, "events", "executable"); err != nil {
 		db.Close()

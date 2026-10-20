@@ -303,3 +303,40 @@ func TestOpenTreatsLeadingQuestionMarkAsPartOfPath(t *testing.T) {
 		t.Fatalf("a leading '?' is part of the path, as in the driver, got: %v", err)
 	}
 }
+
+func TestOpenExplainsCantOpenForUnwritableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not apply to root")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	_, err := buffer.Open(filepath.Join(dir, "events.db"), 24)
+	if err == nil || !strings.Contains(err.Error(), "check the path and that the file and its directory are readable and writable") {
+		t.Fatalf("an unwritable directory must say what to check, got: %v", err)
+	}
+}
+
+func TestOpenExplainsCantOpenForFileURIInMissingDirectory(t *testing.T) {
+	path := "file:" + filepath.Join(t.TempDir(), "absent", "events.db")
+	_, err := buffer.Open(path, 24)
+	if err == nil || !strings.Contains(err.Error(), "check the path and that the file and its directory are readable and writable") {
+		t.Fatalf("a file: URI in a missing directory must say what to check, got: %v", err)
+	}
+}
+
+func TestOpenDoesNotAddCantOpenHintToOtherDriverErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.db")
+	if err := os.WriteFile(path, []byte(strings.Repeat("not a database ", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := buffer.Open(path, 24)
+	if err == nil {
+		t.Fatal("expected an error for a file that is not a database")
+	}
+	if strings.Contains(err.Error(), "cannot open or create") {
+		t.Fatalf("the hint is only for SQLITE_CANTOPEN, got: %v", err)
+	}
+}
