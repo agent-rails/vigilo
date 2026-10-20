@@ -267,7 +267,7 @@ func (fw *FileWatcher) addRecursive(root string) error {
 		return err
 	}
 	if firstErr == nil && len(skippedLinks) > 0 {
-		fw.emitCoverageGap(root, "watch_subtree_symlink_skipped", symlinkSummary(skippedLinks))
+		fw.emitCoverage(root, "watch_subtree_symlink_skipped", symlinkSummary(skippedLinks), SeverityMedium)
 	}
 	return firstErr
 }
@@ -356,8 +356,8 @@ func (fw *FileWatcher) processSubtreeScanBatch() {
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			fw.emitCoverageGap(task.root, "watch_subtree_symlink_skipped",
-				fmt.Errorf("symlink subtree is not followed: %s", path))
+			fw.emitCoverage(task.root, "watch_subtree_symlink_skipped",
+				fmt.Errorf("symlink subtree is not followed: %s", path), SeverityMedium)
 			continue
 		}
 		if entry.IsDir() {
@@ -747,11 +747,15 @@ func (fw *FileWatcher) reconcileParentWatches() {
 }
 
 func (fw *FileWatcher) emitCoverageGap(path, action string, cause error) {
+	fw.emitCoverage(path, action, cause, SeverityHigh)
+}
+
+func (fw *FileWatcher) emitCoverage(path, action string, cause error, severity Severity) {
 	detail := "file watcher coverage is incomplete"
 	if cause != nil {
 		detail += ": " + cause.Error()
 	}
-	e := Event{Source: SourceHealth, Timestamp: time.Now(), Action: action, Resource: path, Detail: detail, Severity: SeverityHigh}
+	e := Event{Source: SourceHealth, Timestamp: time.Now(), Action: action, Resource: path, Detail: detail, Severity: severity}
 	// Health reporting must never stall the filesystem event loop. The warning
 	// remains visible in the daemon log if the shared event bus is saturated.
 	select {

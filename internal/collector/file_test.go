@@ -859,6 +859,9 @@ func TestFileWatcherKeepsRootWatchedWhenItContainsSymlink(t *testing.T) {
 			}
 			if event.Action == "watch_subtree_symlink_skipped" && strings.Contains(event.Detail, link) {
 				skipped++
+				if event.Severity != SeverityMedium {
+					t.Fatalf("a skipped symlink is not a failure and must stay below the default alert threshold, got %s", event.Severity)
+				}
 			}
 		case <-deadline:
 			collecting = false
