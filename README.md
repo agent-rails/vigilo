@@ -40,6 +40,7 @@ To stop Vigilo, use `systemctl --user disable --now vigilo.service` on Linux or 
 - Process and network observations use polling and may miss brief activity.
 - Optional Linux `auditd` rules can add short-lived execution events and identify processes that access selected files. Vigilo does not install these rules for you.
 - Optional npm and Terraform checks report suspicious project changes for investigation; they do not prove compromise.
+- When Vigilo runs as the user service, the log shows `MCP stdio transport closed on stdin EOF` at every start. A service manager gives the process no stdin, so the optional AI analyst cannot reach the daemon. File, process and network monitoring and alerts are not affected. To enable the analyst, set `mcp_transport: http` and `VIGILO_MCP_TOKEN` in `~/.config/vigilo/env`; see `config.example.yaml`.
 
 For Linux logs, run `journalctl --user -u vigilo -f`. For macOS logs, run `tail -f "$HOME/Library/Logs/Vigilo/stderr.log"`.
 
