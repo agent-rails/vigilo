@@ -88,7 +88,7 @@ func displayPath(path string) string {
 		runes = runes[:parentPathMaxRunes]
 	}
 	for i, r := range runes {
-		if unicode.IsControl(r) {
+		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
 			runes[i] = '?'
 		}
 	}

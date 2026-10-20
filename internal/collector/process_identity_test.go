@@ -84,6 +84,12 @@ func TestSuspiciousChildDetail(t *testing.T) {
 			"suspicious child of python (parent pid 100, executable unavailable)"},
 		{"control characters replaced", procInfo{pid: 7, name: "node", executable: "/tmp/x\nFAKE: all clear\x1b[31m/node"},
 			"suspicious child of node (parent pid 7, /tmp/x?FAKE: all clear?[31m/node)"},
+		{"format and separator characters replaced", procInfo{pid: 8, name: "node", executable: "/tmp/a b c‮d​e"},
+			"suspicious child of node (parent pid 8, /tmp/a?b?c?d?e)"},
+		{"path of exactly 256 runes not truncated", procInfo{pid: 9, name: "node", executable: long[:256]},
+			"suspicious child of node (parent pid 9, " + long[:256] + ")"},
+		{"truncation counts runes", procInfo{pid: 9, name: "node", executable: strings.Repeat("é", 300)},
+			"suspicious child of node (parent pid 9, " + strings.Repeat("é", 256) + "...)"},
 		{"long path truncated", procInfo{pid: 9, name: "python3", executable: long},
 			"suspicious child of python3 (parent pid 9, " + long[:256] + "...)"},
 	}
