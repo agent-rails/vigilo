@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.5
+
+### Changes
+
+- Keep a watched root available when it contains a symlink. Symlinks are skipped with one Medium event per root instead of marking the whole root failed. A directory symlink created after startup is no longer followed, and a root recreated as a symlink is reported.
+- Name the parent process, its pid and its executable path in suspicious-child events.
+- Match interpreter parents by the names the OS reports (for example `Python`, `python3.13`), so Homebrew and uv Pythons now raise the suspicious-child event on macOS. This raises critical-event volume on developer machines; there is no parent-scoped suppression.
+- Name the path and cause when the database path cannot be opened, and say what to check when SQLite cannot open or create the file.
+- Document the MCP stdio EOF warning under a service manager.
+
+### Limits
+
+- Verified on macOS arm64 only; Linux behaviour was not exercised beyond `GOOS=linux go vet` and CI.
+- A self-referencing symlink still fails its root on macOS. A moved-in subtree can emit one event per symlink.
+- Interpreter matching does not cover `nodejs`, `pythonw` or `python3.13t`, and a renamed interpreter evades it.
+- The dashboard coverage status stays degraded after any health event until restart.
+
 ## v0.2.4
 
 ### Changes
