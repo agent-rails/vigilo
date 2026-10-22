@@ -5,6 +5,7 @@ package collector
 import (
 	"context"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -91,7 +92,7 @@ func (pw *ProcessWatcher) scan(emit bool) {
 	current := parseProcessList(out)
 	if emit {
 		for _, info := range changedProcesses(pw.seen, current) {
-			if !pw.checkProcess(info, current) && pw.observeNew {
+			if !pw.checkProcess(info, current) && pw.observeNew && !ownPollingChild(info) {
 				action, detail := "observed", "new process observed"
 				if _, existed := pw.seen[info.pid]; existed {
 					action, detail = "identity_changed", "process identity changed while PID remained present"
@@ -101,6 +102,13 @@ func (pw *ProcessWatcher) scan(emit bool) {
 		}
 	}
 	pw.seen = current
+}
+
+func ownPollingChild(p procInfo) bool {
+	if p.ppid != os.Getpid() {
+		return false
+	}
+	return p.executable == "/bin/ps" || p.executable == "/usr/sbin/netstat" || p.executable == "(netstat)" || p.executable == "<defunct>"
 }
 
 func (pw *ProcessWatcher) reportProviderIssue(err error) {
