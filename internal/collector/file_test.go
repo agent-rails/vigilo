@@ -271,12 +271,15 @@ func TestFileWatcherRecoversWhenContainingDirectoryIsRecreated(t *testing.T) {
 	}
 
 parentWatchReinstalled:
-	if err := os.WriteFile(target, []byte("created after recovery"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	deadline = time.After(3 * time.Second)
+	rewrite := time.NewTicker(50 * time.Millisecond)
+	defer rewrite.Stop()
 	for {
 		select {
+		case <-rewrite.C:
+			if err := os.WriteFile(target, []byte("created after recovery"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		case event := <-events:
 			if event.Source == SourceFile && event.Resource == target && (event.Action == "write" || event.Action == "create") {
 				return
