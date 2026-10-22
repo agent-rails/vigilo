@@ -54,9 +54,8 @@ func parentChildSignal(child procInfo, processes map[int]procInfo) (Severity, pr
 	if !ok {
 		return "", procInfo{}, false
 	}
-	parentName := filepath.Base(parent.name)
 	childName := filepath.Base(child.name)
-	suspicious, ok := suspiciousChildren[parentName]
+	suspicious, ok := suspiciousChildren[interpreterKey(parent.name)]
 	if !ok {
 		return "", procInfo{}, false
 	}
@@ -70,6 +69,10 @@ func parentChildSignal(child procInfo, processes map[int]procInfo) (Severity, pr
 		}
 	}
 	return "", procInfo{}, false
+}
+
+func interpreterKey(name string) string {
+	return strings.TrimRight(strings.ToLower(filepath.Base(name)), "0123456789.")
 }
 
 const parentPathMaxRunes = 256

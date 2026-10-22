@@ -18,7 +18,6 @@ import (
 var suspiciousChildren = map[string][]string{
 	"node":    {"sh", "bash", "curl", "wget", "python", "python3", "nc", "ncat"},
 	"python":  {"sh", "bash", "curl", "wget", "nc", "ncat"},
-	"python3": {"sh", "bash", "curl", "wget", "nc", "ncat"},
 	"java":    {"sh", "bash", "curl", "wget"},
 	"nginx":   {"sh", "bash", "python", "python3"},
 }
