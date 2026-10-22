@@ -108,7 +108,7 @@ func ownPollingChild(p procInfo) bool {
 	if p.ppid != os.Getpid() {
 		return false
 	}
-	return p.name == "ps" || p.name == "netstat" || p.name == "(netstat)"
+	return p.executable == "/bin/ps" || p.executable == "/usr/sbin/netstat" || p.executable == "(netstat)" || p.executable == "<defunct>"
 }
 
 func (pw *ProcessWatcher) reportProviderIssue(err error) {

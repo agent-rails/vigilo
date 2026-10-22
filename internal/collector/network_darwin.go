@@ -91,7 +91,7 @@ func (nw *NetworkWatcher) loop() {
 
 func (nw *NetworkWatcher) scan(emit bool) {
 	// -n: numeric, -f inet: IPv4+6, -p tcp: TCP only
-	out, err := exec.Command("netstat", "-n", "-f", "inet", "-p", "tcp").Output()
+	out, err := exec.Command("/usr/sbin/netstat", "-n", "-f", "inet", "-p", "tcp").Output()
 	if err != nil {
 		return
 	}
