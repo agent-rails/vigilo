@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.6
+
+### Changes
+
+- On macOS, stop recording the daemon's own `ps` and `netstat` polling children as observed processes. `netstat` is now run as `/usr/sbin/netstat`, and the daemon's polling children are matched by executable, so a renamed or PATH-resolved binary is still reported.
+
+### Limits
+
+- macOS only; Linux collects from `/proc` and is unchanged.
+- Unreaped children of the daemon pid are hidden at info level because they carry no identity.
+
 ## v0.2.5
 
 ### Changes
