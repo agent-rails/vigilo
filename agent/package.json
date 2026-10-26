@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@anthropic-ai/sdk": "^0.137.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@slack/web-api": "^7.19.0",
     "node-cron": "^3.0.0",
     "dotenv": "^16.0.0",
@@ -20,9 +20,9 @@
     "pino-pretty": "^11.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^22.20.5",
     "@types/node-cron": "^3.0.0",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.15",
     "typescript": "^5.4.0"
   }
 }
