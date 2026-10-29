@@ -45,3 +45,7 @@ To stop Vigilo, use `systemctl --user disable --now vigilo.service` on Linux or 
 For Linux logs, run `journalctl --user -u vigilo -f`. For macOS logs, run `tail -f "$HOME/Library/Logs/Vigilo/stderr.log"`.
 
 See [`config.example.yaml`](config.example.yaml) for settings, [security limits](SECURITY.md), and [monitoring coverage](docs/PERSONAL_MONITORING.md). For a [system-wide Linux install](deploy/install.sh), MCP, or the dashboard, see the [design guide](docs/DESIGN.md). Do not expose MCP or dashboard ports directly to the public internet.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
