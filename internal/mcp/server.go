@@ -263,57 +263,57 @@ func (s *Server) queryAndRespond(opts buffer.QueryOptions) (*mcp.CallToolResult,
 }
 
 func (s *Server) handleFileEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	since, errMsg := parseSinceResult(req.Params.Arguments)
+	since, errMsg := parseSinceResult(req.GetArguments())
 	if errMsg != "" {
 		return errorResult(errMsg)
 	}
 	return s.queryAndRespond(buffer.QueryOptions{
 		Since:    since,
 		Sources:  []string{string(collector.SourceFile)},
-		Severity: parseSeverity(req.Params.Arguments),
-		Limit:    parseLimit(req.Params.Arguments, 100),
+		Severity: parseSeverity(req.GetArguments()),
+		Limit:    parseLimit(req.GetArguments(), 100),
 	})
 }
 
 func (s *Server) handleProcessEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	since, errMsg := parseSinceResult(req.Params.Arguments)
+	since, errMsg := parseSinceResult(req.GetArguments())
 	if errMsg != "" {
 		return errorResult(errMsg)
 	}
 	return s.queryAndRespond(buffer.QueryOptions{
 		Since:   since,
 		Sources: []string{string(collector.SourceProcess)},
-		Limit:   parseLimit(req.Params.Arguments, 100),
+		Limit:   parseLimit(req.GetArguments(), 100),
 	})
 }
 
 func (s *Server) handleNetworkEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	since, errMsg := parseSinceResult(req.Params.Arguments)
+	since, errMsg := parseSinceResult(req.GetArguments())
 	if errMsg != "" {
 		return errorResult(errMsg)
 	}
 	return s.queryAndRespond(buffer.QueryOptions{
 		Since:    since,
 		Sources:  []string{string(collector.SourceNetwork)},
-		Severity: parseSeverity(req.Params.Arguments),
-		Limit:    parseLimit(req.Params.Arguments, 100),
+		Severity: parseSeverity(req.GetArguments()),
+		Limit:    parseLimit(req.GetArguments(), 100),
 	})
 }
 
 func (s *Server) handleAllEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	since, errMsg := parseSinceResult(req.Params.Arguments)
+	since, errMsg := parseSinceResult(req.GetArguments())
 	if errMsg != "" {
 		return errorResult(errMsg)
 	}
 	return s.queryAndRespond(buffer.QueryOptions{
 		Since:    since,
-		Severity: parseSeverity(req.Params.Arguments),
-		Limit:    parseLimit(req.Params.Arguments, 200),
+		Severity: parseSeverity(req.GetArguments()),
+		Limit:    parseLimit(req.GetArguments(), 200),
 	})
 }
 
 func (s *Server) handleCriticalEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	since, errMsg := parseSinceResult(req.Params.Arguments)
+	since, errMsg := parseSinceResult(req.GetArguments())
 	if errMsg != "" {
 		return errorResult(errMsg)
 	}
@@ -357,14 +357,14 @@ type ecsUser struct {
 }
 
 func (s *Server) handleECSEvents(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	since, errMsg := parseSinceResult(req.Params.Arguments)
+	since, errMsg := parseSinceResult(req.GetArguments())
 	if errMsg != "" {
 		return errorResult(errMsg)
 	}
 	events, err := s.store.List(buffer.QueryOptions{
 		Since:    since,
-		Severity: parseSeverity(req.Params.Arguments),
-		Limit:    parseLimit(req.Params.Arguments, 500),
+		Severity: parseSeverity(req.GetArguments()),
+		Limit:    parseLimit(req.GetArguments(), 500),
 	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("query error: %v", err))
