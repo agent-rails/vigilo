@@ -45,7 +45,7 @@ func TestParentChildSignalUsesCurrentSnapshot(t *testing.T) {
 	}
 	severity, parent, ok := parentChildSignal(processes[101], processes)
 	if !ok || severity != SeverityCritical || parent.name != "node" {
-		t.Fatalf("parent created in the same scan was not considered: %q %q %v", severity, parent, ok)
+		t.Fatalf("parent created in the same scan was not considered: %q %+v %v", severity, parent, ok)
 	}
 	out := make(chan Event, 1)
 	watcher := NewProcessWatcher(time.Second, out, nil, false)
